@@ -1,0 +1,10 @@
+NetFix Mobile
+Copyright (C) 2026 rupleide (https://github.com/rupleide)
+
+This product includes software developed by rupleide.
+Original desktop repository: https://github.com/rupleide/NetFix
+Telegram: https://t.me/NetFixRuBi
+
+Third-party components:
+- hev-socks5-tunnel: copyright romanvht (https://github.com/romanvht/ByeByeDPI) and hev (https://github.com/hev-socks5-tunnel)
+- tg-ws-proxy-android: copyright amurcanov (https://github.com/amurcanov/tg-ws-proxy-android) and Flowseal (https://github.com/Flowseal)

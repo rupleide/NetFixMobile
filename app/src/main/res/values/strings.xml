@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">NetFix Mobile</string>
+    <string name="vpn_channel_name">VPN</string>
+    <string name="proxy_channel_name">Прокси</string>
+    <string name="notification_title">NetFix</string>
+    <string name="vpn_notification_content">NetFix работает</string>
+    <string name="service_paused_text">Приостановлен</string>
+    <string name="service_start_btn">Старт</string>
+    <string name="service_pause_btn">Пауза</string>
+    <string name="service_stop_btn">Стоп</string>
+</resources>
