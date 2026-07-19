@@ -244,5 +244,5 @@ git clone https://github.com/rupleide/NetFixMobile.git
 
 <div align="center">
   <sub>Разработано с ❤️ для тех, кто хочет просто нажать на кнопку</sub><br/>
-  <sub>v1.0.1 · 2026</sub>
+  <sub>v1.0.2 · 2026</sub>
 </div>
