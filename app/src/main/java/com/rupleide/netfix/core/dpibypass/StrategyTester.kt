@@ -1,6 +1,7 @@
 package com.rupleide.netfix.core.dpibypass
 
 import android.content.Context
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -113,6 +114,7 @@ class StrategyTester(private val context: Context) {
             if (!isActive) break
 
             val strategy = defaultStrategies[i]
+            Log.i("StrategyTester", "Проверка стратегии №${i + 1}: \"$strategy\"")
             val cleanCmd = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
             val prefix = "--ip 127.0.0.1 --port $testPort "
             val splitArgs = shellSplit("$prefix$cleanCmd").filter { it !in setOf("--help", "--version", "-h", "-v") }
@@ -148,6 +150,7 @@ class StrategyTester(private val context: Context) {
             activeJob.join()
 
             val statusText = if (success) "${ping} мс" else "тайм-аут"
+            Log.i("StrategyTester", "Результат стратегии №${i + 1}: $statusText")
             onProgress(i, strategy, statusText)
 
             if (success && ping < minPing) {

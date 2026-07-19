@@ -116,7 +116,7 @@ fun InfoTab(
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .verticalScroll(scrollState)
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = navOverlayReserve + 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Column(
@@ -251,9 +251,9 @@ fun InfoTab(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(infoBgColor)
-                        .border(1.dp, infoBorderColor, RoundedCornerShape(16.dp))
+                        .border(1.dp, infoBorderColor, RoundedCornerShape(12.dp))
                         .clickable(
                             enabled = buttonEnabled,
                             interactionSource = infoInteractionSource,
@@ -298,7 +298,7 @@ fun InfoTab(
                         text = buttonText,
                         color = Color.White,
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
+                        fontSize = 13.sp
                     )
                 }
             }
@@ -605,24 +605,24 @@ fun InfoTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(bbdBg)
-                        .border(1.5.dp, bbdBorder, RoundedCornerShape(8.dp))
+                        .border(1.dp, bbdBorder, RoundedCornerShape(12.dp))
                         .clickable(
                             interactionSource = bbdInteraction,
                             indication = null
                         ) {
                             handleLinkClick(openBbdUrl, "ByeByeDPI GitHub")
                         }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = "ByeByeDPI (GitHub)",
                             color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
                         )
                         Text(
                             text = "Разработчик: romanvht (обход DPI на уровне VPN)",
@@ -644,24 +644,24 @@ fun InfoTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(tgwsBg)
-                        .border(1.5.dp, tgwsBorder, RoundedCornerShape(8.dp))
+                        .border(1.dp, tgwsBorder, RoundedCornerShape(12.dp))
                         .clickable(
                             interactionSource = tgwsInteraction,
                             indication = null
                         ) {
                             handleLinkClick(openTgwsUrl, "TG WS Proxy GitHub")
                         }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = "TG WS Proxy Android (GitHub)",
                             color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
                         )
                         Text(
                             text = "Разработчик: amurcanov (локальный прокси Telegram)",
@@ -671,8 +671,6 @@ fun InfoTab(
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(navOverlayReserve))
         }
     }
 

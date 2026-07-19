@@ -57,7 +57,6 @@
                 android:value="proxy" />
         </service>
 
-
         <receiver
             android:name=".service.BootReceiver"
             android:exported="true">

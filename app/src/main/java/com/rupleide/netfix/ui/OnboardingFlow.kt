@@ -541,7 +541,7 @@ private fun TvYoutubeCardButton(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(bgColor)
-            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = androidx.compose.material3.ripple(),
@@ -1581,7 +1581,7 @@ private fun SecondaryButton(
             .defaultMinSize(minHeight = height)
             .clip(RoundedCornerShape(12.dp))
             .background(bgColor)
-            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = androidx.compose.material3.ripple(),
@@ -1592,8 +1592,8 @@ private fun SecondaryButton(
         Text(
             text = text,
             color = if (isHighlighted) Color.White else Color(0xFFF4F4F5),
-            fontSize = if (isLandscape) 15.sp else 16.sp,
-            fontWeight = FontWeight.Medium
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }
@@ -1632,7 +1632,7 @@ private fun CardButton(
             .defaultMinSize(minHeight = 120.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(bgColor)
-            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = androidx.compose.material3.ripple(),

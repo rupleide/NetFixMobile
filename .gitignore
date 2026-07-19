@@ -8,3 +8,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+build_check*.txt
+build_out*.txt
+RELEASE_*.md

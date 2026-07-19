@@ -12,4 +12,3 @@ sealed class OnboardingStep {
     object Summary : OnboardingStep()
     object FinalGreeting : OnboardingStep()
 }
-

@@ -40,14 +40,22 @@ class WatchdogReceiver : BroadcastReceiver() {
                 ServiceManager.start(appCtx, Mode.VPN)
             }
             if (wantsTelegram) {
-                if (wantsYoutube) {
-                    TgProxyController.startAsync(appCtx, {}, {})
-                } else {
-                    val intent = Intent(appCtx, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                        action = com.rupleide.netfix.data.START_ACTION
-                        putExtra("open_tg", false)
+                val port = TgProxyController.getPort(appCtx)
+                val isTgProxyRunning = com.rupleide.netfix.data.isTgProxyRunningGlobal || TgProxyController.isPortOpen(
+                    TgProxyController.DEFAULT_BIND_IP,
+                    port,
+                    500
+                )
+                if (!isTgProxyRunning) {
+                    if (wantsYoutube) {
+                        TgProxyController.startAsync(appCtx, {}, {})
+                    } else {
+                        val intent = Intent(appCtx, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                            action = com.rupleide.netfix.data.START_ACTION
+                            putExtra("open_tg", false)
+                        }
+                        androidx.core.content.ContextCompat.startForegroundService(appCtx, intent)
                     }
-                    androidx.core.content.ContextCompat.startForegroundService(appCtx, intent)
                 }
             }
         }

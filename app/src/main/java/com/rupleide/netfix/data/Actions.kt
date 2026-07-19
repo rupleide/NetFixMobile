@@ -27,6 +27,8 @@ var updateInfoGlobal by mutableStateOf<com.rupleide.netfix.core.update.UpdateMan
 var updateProgressGlobal by mutableStateOf(-1f)
 var updateStatusGlobal by mutableStateOf<String?>(null)
 var onNavigateToTab: ((Int) -> Unit)? = null
+var forceUpdateTestGlobal by mutableStateOf(false)
+var isActionSheetVisibleGlobal by mutableStateOf(false)
 
 fun setStatus(status: AppStatus, mode: Mode) {
     appStatus = status to mode

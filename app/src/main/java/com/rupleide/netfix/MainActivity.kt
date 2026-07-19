@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.SystemBarStyle
 import androidx.compose.foundation.Canvas
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import kotlinx.coroutines.delay
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -103,10 +104,20 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.PI
+import kotlin.math.sqrt
+import kotlin.math.exp
 import kotlin.random.Random
+
+import com.rupleide.netfix.ui.rememberEntranceProgress
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.graphics.drawscope.Stroke
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        com.rupleide.netfix.core.debug.AppDebugManager.init(this)
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -117,9 +128,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = androidx.compose.ui.platform.LocalContext.current
             var showSplash by remember { mutableStateOf(splashNotShownYet) }
+            var mainContentVisible by remember { mutableStateOf(false) }
             val prefs = remember { context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE) }
             val storedVal = prefs.getBoolean("onboarding_completed", false)
-            android.util.Log.e("NetFixDebug", "MainActivity: onboarding_completed read as: $storedVal")
+            Log.e("NetFixDebug", "MainActivity: onboarding_completed read as: $storedVal")
             var onboardingCompleted by remember { mutableStateOf(storedVal) }
             val isSmartTv = prefs.getBoolean("is_smart_tv", false)
             var setupDone by remember { mutableStateOf(prefs.getBoolean("wizard_is_setup_complete", false)) }
@@ -180,6 +192,15 @@ class MainActivity : ComponentActivity() {
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
                     } else {
+                        val tabName = when (index) {
+                            0 -> "Главная"
+                            1 -> "Telegram"
+                            2 -> "YouTube"
+                            3 -> "Настройки"
+                            4 -> "О программе"
+                            else -> "Вкладка $index"
+                        }
+                        com.rupleide.netfix.core.debug.AppDebugManager.log("Переход на вкладку: $tabName")
                         selectedTab = index
                     }
                 }
@@ -253,16 +274,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-
-
             NetFixMobileTheme {
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (!onboardingCompleted) {
                         OnboardingFlow(
                             onCompleted = {
-                                android.util.Log.e("NetFixDebug", "MainActivity: Setting onboarding_completed to true (calling commit)")
+                                Log.e("NetFixDebug", "MainActivity: Setting onboarding_completed to true (calling commit)")
                                 prefs.edit().putBoolean("onboarding_completed", true).commit()
-                                android.util.Log.e("NetFixDebug", "MainActivity: onboarding_completed applied, memory cache is: " + prefs.getBoolean("onboarding_completed", false))
+                                Log.e("NetFixDebug", "MainActivity: onboarding_completed applied, memory cache is: " + prefs.getBoolean("onboarding_completed", false))
                                 onboardingCompleted = true
                                 wantsYoutubeBypass = prefs.getBoolean("wants_youtube_bypass", true)
                                 telegramProxyEnabledByUser = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
@@ -302,7 +321,11 @@ class MainActivity : ComponentActivity() {
                                     label = "tabTransition"
                                 ) { tab ->
                                     when (tab) {
-                                        0 -> MainTab(focusRequester = tabFocusRequesters[0], navBarFocusRequester = navBarFocusRequester)
+                                        0 -> MainTab(
+                                            focusRequester = tabFocusRequesters[0],
+                                            navBarFocusRequester = navBarFocusRequester,
+                                            playEntranceAnimation = mainContentVisible && selectedTab == 0
+                                        )
                                         1 -> TgProxyTab(focusRequester = tabFocusRequesters[1], navBarFocusRequester = navBarFocusRequester)
                                         2 -> YoutubeTab(focusRequester = tabFocusRequesters[2], navBarFocusRequester = navBarFocusRequester)
                                         3 -> SettingsTab(focusRequester = tabFocusRequesters[3], navBarFocusRequester = navBarFocusRequester)
@@ -310,27 +333,55 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
-                                ProxyNavigationBar(
-                                    activeNavItems = activeNavItems,
-                                    selectedTab = selectedTab,
-                                    tabFocusRequester = tabFocusRequesters[selectedTab],
-                                    navBarFocusRequester = navBarFocusRequester,
-                                    showYoutubeAlert = onboardingCompleted && wantsYoutubeBypass && !setupDone,
-                                    onTabSelected = { originalIndex ->
-                                        val isVpnRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
-                                        if (isVpnRunning && originalIndex in listOf(1, 3)) {
-                                            android.widget.Toast.makeText(
-                                                context,
-                                                "Выключите обход, чтобы изменять настройки",
-                                                android.widget.Toast.LENGTH_SHORT
-                                            ).show()
-                                        } else {
-                                            selectedTab = originalIndex
-                                        }
-                                    },
+                                val navBarProgress = rememberEntranceProgress(
+                                    play = mainContentVisible,
+                                    delayMillis = 300L,
+                                    dampingRatio = 0.82f,
+                                    stiffness = 150f
+                                )
+                                val navBarAlpha = navBarProgress.coerceIn(0f, 1f)
+                                Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomCenter)
-                                )
+                                        .graphicsLayer {
+                                            alpha = navBarAlpha
+                                            translationY = (1f - navBarAlpha) * 120.dp.toPx()
+                                        }
+                                ) {
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = !com.rupleide.netfix.data.isActionSheetVisibleGlobal,
+                                        enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f))) +
+                                                androidx.compose.animation.slideInVertically(
+                                                    animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.72f, stiffness = 160f)
+                                                ) { fullHeight -> fullHeight },
+                                        exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160, easing = androidx.compose.animation.core.CubicBezierEasing(0.4f, 0.0f, 1.0f, 1.0f))) +
+                                               androidx.compose.animation.slideOutVertically(
+                                                   animationSpec = androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f))
+                                               ) { fullHeight -> fullHeight },
+                                        modifier = Modifier
+                                    ) {
+                                        ProxyNavigationBar(
+                                            activeNavItems = activeNavItems,
+                                            selectedTab = selectedTab,
+                                            tabFocusRequester = tabFocusRequesters[selectedTab],
+                                            navBarFocusRequester = navBarFocusRequester,
+                                            showYoutubeAlert = onboardingCompleted && wantsYoutubeBypass && !setupDone,
+                                            onTabSelected = { originalIndex ->
+                                                val isVpnRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
+                                                if (isVpnRunning && originalIndex in listOf(1, 3)) {
+                                                    android.widget.Toast.makeText(
+                                                        context,
+                                                        "Выключите обход, чтобы изменять настройки",
+                                                        android.widget.Toast.LENGTH_SHORT
+                                                    ).show()
+                                                } else {
+                                                    selectedTab = originalIndex
+                                                }
+                                            },
+                                            modifier = Modifier
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -339,13 +390,15 @@ class MainActivity : ComponentActivity() {
                         NetFixSplashScreen(onDismiss = {
                             showSplash = false
                             splashNotShownYet = false
+                            mainContentVisible = true
                         })
+                    } else if (!mainContentVisible) {
+                        mainContentVisible = true
                     }
                 }
             }
         }
     }
-
 
     companion object {
         var splashNotShownYet = true

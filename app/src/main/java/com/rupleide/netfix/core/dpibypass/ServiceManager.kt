@@ -2,7 +2,7 @@ package com.rupleide.netfix.core.dpibypass
 
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.core.content.ContextCompat
 import com.rupleide.netfix.data.AppStatus
 import com.rupleide.netfix.data.Mode

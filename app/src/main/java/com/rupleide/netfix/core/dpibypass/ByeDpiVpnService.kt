@@ -9,7 +9,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService.SERVICE_INTERFACE
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.lifecycle.lifecycleScope
 import com.rupleide.netfix.MainActivity
 import com.rupleide.netfix.R
@@ -55,23 +55,9 @@ class ByeDpiVpnService : LifecycleVpnService() {
     }
 
     private fun acquireWakeLock() {
-        if (wakeLock == null) {
-            val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-            wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "NetFix::VpnWakeLock").apply {
-                acquire()
-            }
-        }
     }
 
     private fun releaseWakeLock() {
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {
-        } finally {
-            wakeLock = null
-        }
     }
 
     override fun onCreate() {
@@ -392,7 +378,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         val tun2socksConfig = buildString {
             appendLine("tunnel:")
-            appendLine("  mtu: 8500")
+            appendLine("  mtu: 1500")
 
             appendLine("misc:")
             appendLine("  task-stack-size: 81920")
@@ -525,6 +511,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         builder.addAddress("10.10.10.10", 32)
             .addRoute("0.0.0.0", 0)
+            .setMtu(1500)
 
         if (ipv6) {
             builder.addAddress("fd00::1", 128)

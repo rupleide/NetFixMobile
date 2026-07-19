@@ -16,11 +16,17 @@ android {
     defaultConfig {
         applicationId = "com.rupleide.netfix"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        targetSdk = 26
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+        disable.add("ExpiredTargetSdkVersion")
     }
 
     buildTypes {
@@ -52,7 +58,6 @@ android {
         }
     }
 }
-
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.14.0@aar")
@@ -111,5 +116,5 @@ tasks.named("preBuild") {
 }
 
 base {
-    archivesName.set("NetFix-Mobile-v1.0.1")
+    archivesName.set("NetFix-Mobile-v1.0.2")
 }

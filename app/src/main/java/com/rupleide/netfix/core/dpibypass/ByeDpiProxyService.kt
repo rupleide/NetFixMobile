@@ -5,7 +5,7 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.util.Log
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.rupleide.netfix.R

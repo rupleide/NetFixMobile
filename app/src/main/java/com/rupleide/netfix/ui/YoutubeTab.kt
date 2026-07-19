@@ -1,8 +1,19 @@
 package com.rupleide.netfix.ui
 
+import com.rupleide.netfix.ui.components.NetFixTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.ui.window.Dialog
+import com.rupleide.netfix.ui.components.NetFixEditStrategySheet
+import com.rupleide.netfix.ui.components.NetFixStrategySheet
+import com.rupleide.netfix.ui.components.StrategyAction
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Icon
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,7 +94,7 @@ fun YoutubeTab(
     var hasLaunchedTest by remember { mutableStateOf(sharedPrefs.getBoolean("wizard_has_launched_test", false)) }
     var isSetupComplete by remember {
         val complete = sharedPrefs.getBoolean("wizard_is_setup_complete", false)
-        android.util.Log.e("NetFixDebug", "YoutubeTab init: isSetupComplete = $complete")
+        Log.e("NetFixDebug", "YoutubeTab init: isSetupComplete = $complete")
         mutableStateOf(complete)
     }
     var youtubeMode by remember { mutableStateOf(sharedPrefs.getString("youtube_mode", "smarttube") ?: "smarttube") }
@@ -97,7 +108,7 @@ fun YoutubeTab(
     var editNotesText by remember { mutableStateOf("") }
     val isSmartTube = youtubeMode == "smarttube"
 
-    val activeCmd = sharedPrefs.getString("byedpi_cmd_args", null)
+    var activeCmd by remember { mutableStateOf(sharedPrefs.getString("byedpi_cmd_args", null)) }
     var manualMode by remember { mutableStateOf(sharedPrefs.getBoolean("strategy_manual_mode", false)) }
     val advancedMode = true
     val smartTubeInstallFocusRequester = remember { FocusRequester() }
@@ -110,11 +121,27 @@ fun YoutubeTab(
     fun saveManualMode(enabled: Boolean) {
         manualMode = enabled
         sharedPrefs.edit().putBoolean("strategy_manual_mode", enabled).apply()
+        com.rupleide.netfix.core.debug.AppDebugManager.log("Режим YouTube: ${if (enabled) "Ручной" else "Автоматический"}")
     }
 
-
-
-
+    fun getSortedStrategies(): List<Triple<Int, String, String>> {
+        val currentCmd = activeCmd
+        return StrategyTestManager.testResults.sortedWith { a, b ->
+            val aStrategy = a.second
+            val bStrategy = b.second
+            val aNormalized = aStrategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+            val bNormalized = bStrategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+            val aPinned = StrategyTestManager.pinnedStrategies[aStrategy] ?: false
+            val bPinned = StrategyTestManager.pinnedStrategies[bStrategy] ?: false
+            val aCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == aNormalized
+            val bCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == bNormalized
+            
+            val aWeight = (if (aPinned) 2 else 0) + (if (aCurrent) 1 else 0)
+            val bWeight = (if (bPinned) 2 else 0) + (if (bCurrent) 1 else 0)
+            
+            bWeight.compareTo(aWeight)
+        }
+    }
 
     val presets = remember {
         listOf(
@@ -130,8 +157,6 @@ fun YoutubeTab(
     var isDownloadingSmartTube by remember { mutableStateOf(false) }
     var smartTubeDownloadProgress by remember { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
-
-
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
@@ -160,7 +185,7 @@ fun YoutubeTab(
     }
 
     fun saveIsSetupComplete(complete: Boolean) {
-        android.util.Log.e("NetFixDebug", "saveIsSetupComplete called with: $complete", Throwable())
+        Log.e("NetFixDebug", "saveIsSetupComplete called with: $complete", Throwable())
         isSetupComplete = complete
         sharedPrefs.edit().putBoolean("wizard_is_setup_complete", complete).apply()
     }
@@ -196,6 +221,8 @@ fun YoutubeTab(
     }
 
     fun launchYoutubeApp() {
+        val target = if (!isSmartTv) "YouTube" else if (isSmartTube) "SmartTube" else "YouTube TV"
+        com.rupleide.netfix.core.debug.AppDebugManager.log("Запуск внешнего плеера: $target")
         if (!isSmartTv) {
             val pm = context.packageManager
             val intent = pm.getLaunchIntentForPackage("com.google.android.youtube")
@@ -277,6 +304,16 @@ fun YoutubeTab(
     }
 
     var showVpnDeniedDialog by remember { mutableStateOf(false) }
+    var showTestingTypeDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(editingStrategy, deletingStrategy, showActionMenuForStrategy, showVpnDeniedDialog, showTestingTypeDialog, showAllStrategiesList) {
+        com.rupleide.netfix.data.isActionSheetVisibleGlobal = (editingStrategy != null) || 
+            (deletingStrategy != null) || 
+            (showActionMenuForStrategy != null) || 
+            showVpnDeniedDialog || 
+            showTestingTypeDialog || 
+            showAllStrategiesList
+    }
 
     val vpnLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
@@ -363,17 +400,27 @@ fun YoutubeTab(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                            .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                            .padding(20.dp),
+                            .padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        Text(
-                            text = "Подбор конфигурации",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = Color(0xFFF4F4F5),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Подбор конфигурации",
+                                color = Color(0xFFF4F4F5),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                        }
 
                         val progress = if (StrategyTestManager.totalStrategiesCount > 0) {
                             StrategyTestManager.currentTestIndex.toFloat() / StrategyTestManager.totalStrategiesCount
@@ -529,15 +576,9 @@ fun YoutubeTab(
                 }
             }
         } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .widthIn(max = if (isLandscape) 820.dp else 500.dp)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopCenter
             ) {
                 Box(
                     modifier = Modifier
@@ -562,22 +603,43 @@ fun YoutubeTab(
                             }
                         }
                 )
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = if (isLandscape) 820.dp else 500.dp)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = navOverlayReserve + 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
             if (isSmartTv && isSmartTube && !smartTubeInstalled.value) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text(
-                        text = "Установка SmartTube",
-                        color = Color(0xFFF4F4F5),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tv,
+                            contentDescription = null,
+                            tint = Color(0xFFF4F4F5),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Установка SmartTube",
+                            color = Color(0xFFF4F4F5),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
                     Text(
                         text = "Официальный YouTube сейчас полностью заблокирован в РФ и не работает. Для просмотра видео на телевизоре необходимо установить специальный ТВ-плеер SmartTube.",
                         color = Color(0xFFA1A1AA),
@@ -607,7 +669,7 @@ fun YoutubeTab(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(btnBgColor)
-                            .border(1.5.dp, btnBorderColor, RoundedCornerShape(12.dp))
+                            .border(1.dp, btnBorderColor, RoundedCornerShape(12.dp))
                             .focusRequester(smartTubeInstallFocusRequester)
                             .focusProperties { down = navBarFocusRequester }
                             .clickable(
@@ -632,7 +694,7 @@ fun YoutubeTab(
                                     isDownloadingSmartTube = false
                                 }
                             }
-                            .padding(vertical = 16.dp),
+                            .padding(vertical = 14.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -642,8 +704,8 @@ fun YoutubeTab(
                                 "Установить SmartTube"
                             },
                             color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
                         )
                     }
                 }
@@ -654,8 +716,7 @@ fun YoutubeTab(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Row(
@@ -663,12 +724,23 @@ fun YoutubeTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Все стратегии (${StrategyTestManager.testResults.size})",
-                            color = Color(0xFFF4F4F5),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.List,
+                                contentDescription = null,
+                                tint = Color(0xFFF4F4F5),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Все стратегии (${StrategyTestManager.testResults.size})",
+                                color = Color(0xFFF4F4F5),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                        }
 
                         Text(
                             text = "Назад",
@@ -685,7 +757,7 @@ fun YoutubeTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        for (item in StrategyTestManager.testResults) {
+                        for (item in getSortedStrategies()) {
                             val (index, strategy, status) = item
                             val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
                             val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
@@ -736,7 +808,7 @@ fun YoutubeTab(
                                         if (!notes.isNullOrBlank()) {
                                             Text(
                                                 text = "Заметка: $notes",
-                                                color = Color(0xFF7C6AF7),
+                                                color = Color(0xFFA1A1AA),
                                                 fontSize = 11.sp,
                                                 maxLines = 2
                                             )
@@ -816,7 +888,6 @@ fun YoutubeTab(
                         }
                     }
 
-
                 }
             } else if (isSetupComplete) {
                 Column(
@@ -824,19 +895,30 @@ fun YoutubeTab(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text(
-                        text = "Настройка YouTube",
-                        color = Color(0xFFF4F4F5),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_youtube),
+                            contentDescription = null,
+                            tint = Color(0xFFF4F4F5),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Настройка YouTube",
+                            color = Color(0xFFF4F4F5),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
 
-                    val activePing = if (activeCmd != null) {
-                         val item = StrategyTestManager.testResults.find { it.second.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == activeCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") }
+                    val currentCmd = activeCmd
+                    val activePing = if (currentCmd != null) {
+                         val item = StrategyTestManager.testResults.find { it.second.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") }
                         item?.third?.replace(" (Успешно)", "") ?: "неизвестно"
                     } else {
                         "неизвестно"
@@ -846,9 +928,9 @@ fun YoutubeTab(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF242426))
-                            .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(8.dp))
+                            .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
                             .padding(12.dp)
                     ) {
                         Text(
@@ -877,407 +959,420 @@ fun YoutubeTab(
                     val autoFocused1 by autoInteractionSource1.collectIsFocusedAsState()
                     val autoHovered1 by autoInteractionSource1.collectIsHoveredAsState()
                     val autoHighlighted1 = autoFocused1 || autoHovered1
-                    val autoBgColor1 = if (!manualMode) Color(0xFF3B82F6) else if (autoHighlighted1) Color(0x33FFFFFF) else Color.Transparent
-                    val autoBorderColor1 = if (autoHighlighted1) Color.White else Color.Transparent
 
                     val manualInteractionSource1 = remember { MutableInteractionSource() }
                     val manualFocused1 by manualInteractionSource1.collectIsFocusedAsState()
                     val manualHovered1 by manualInteractionSource1.collectIsHoveredAsState()
                     val manualHighlighted1 = manualFocused1 || manualHovered1
-                    val manualBgColor1 = if (manualMode) Color(0xFF3B82F6) else if (manualHighlighted1) Color(0x33FFFFFF) else Color.Transparent
-                    val manualBorderColor1 = if (manualHighlighted1) Color.White else Color.Transparent
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF161616))
-                            .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(autoBgColor1)
-                                .border(1.5.dp, autoBorderColor1, RoundedCornerShape(6.dp))
-                                .focusRequester(autoModeToggleFocusRequester)
-                                .clickable(
-                                    interactionSource = autoInteractionSource1,
-                                    indication = null
-                                ) { saveManualMode(false) }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Автоматически",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(manualBgColor1)
-                                .border(1.5.dp, manualBorderColor1, RoundedCornerShape(6.dp))
-                                .clickable(
-                                    interactionSource = manualInteractionSource1,
-                                    indication = null
-                                ) { saveManualMode(true) }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Вручную",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
+                    val targetModeIndex = if (manualMode) 1f else 0f
+                    val modeIndicatorIndex = remember { androidx.compose.animation.core.Animatable(targetModeIndex) }
+                    val modeDragVisualIndex = modeIndicatorIndex.value
+
+                    LaunchedEffect(manualMode) {
+                        if (com.rupleide.netfix.data.performanceModeGlobal) {
+                            modeIndicatorIndex.snapTo(targetModeIndex)
+                        } else {
+                            modeIndicatorIndex.animateTo(
+                                targetValue = targetModeIndex,
+                                animationSpec = androidx.compose.animation.core.tween(
+                                    durationMillis = 350,
+                                    easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0.9f, 0.24f, 1f)
+                                )
                             )
                         }
                     }
 
-                    if (!manualMode) {
-                        val openInteractionSource = remember { MutableInteractionSource() }
-                        val openPressed by openInteractionSource.collectIsPressedAsState()
-                        val openHovered by openInteractionSource.collectIsHoveredAsState()
-                        val openFocused by openInteractionSource.collectIsFocusedAsState()
-                        val openHighlighted = openPressed || openHovered || openFocused
-
-                        val openBgColor by animateColorAsState(
-                            targetValue = if (openHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-                        val openBorderColor by animateColorAsState(
-                            targetValue = if (openHighlighted) Color.White else Color(0x1AFFFFFF),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF161616))
+                            .padding(4.dp)
+                    ) {
+                        val itemWidth = (maxWidth - 4.dp) / 2
+                        val indicatorOffset = (itemWidth + 4.dp) * modeDragVisualIndex
 
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(openBgColor)
-                                .border(1.5.dp, openBorderColor, RoundedCornerShape(12.dp))
-                                .focusRequester(manualOpenYoutubeFocusRequester)
-                                .onPreviewKeyEvent { event ->
-                                    if (event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
-                                        try { manualModeListFocusRequester.requestFocus() } catch (_: Exception) {}
-                                        true
-                                    } else false
-                                }
-                                .clickable(
-                                    interactionSource = openInteractionSource,
-                                    indication = null
-                                ) {
-                                    if (appStatus.first != AppStatus.Running) {
-                                        val intent = android.net.VpnService.prepare(context)
-                                        if (intent != null) {
-                                            vpnLauncher.launch(intent)
-                                        } else {
-                                            startAll()
-                                            launchYoutubeApp()
-                                        }
+                                .offset(x = indicatorOffset)
+                                .width(itemWidth)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF3B82F6))
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val autoBgColor by animateColorAsState(
+                                targetValue = if (autoHighlighted1 && manualMode) Color(0x1AFFFFFF) else Color.Transparent,
+                                animationSpec = tween(150),
+                                label = ""
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(autoBgColor)
+                                    .then(
+                                        if (autoHighlighted1) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(10.dp))
+                                        else Modifier
+                                    )
+                                    .focusRequester(autoModeToggleFocusRequester)
+                                    .clickable(
+                                        interactionSource = autoInteractionSource1,
+                                        indication = null
+                                    ) { saveManualMode(false) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Автоматически",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+
+                            val manualBgColor by animateColorAsState(
+                                targetValue = if (manualHighlighted1 && !manualMode) Color(0x1AFFFFFF) else Color.Transparent,
+                                animationSpec = tween(150),
+                                label = ""
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(manualBgColor)
+                                    .then(
+                                        if (manualHighlighted1) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(10.dp))
+                                        else Modifier
+                                    )
+                                    .clickable(
+                                        interactionSource = manualInteractionSource1,
+                                        indication = null
+                                    ) { saveManualMode(true) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Вручную",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+
+                    val openInteractionSource = remember { MutableInteractionSource() }
+                    val openPressed by openInteractionSource.collectIsPressedAsState()
+                    val openHovered by openInteractionSource.collectIsHoveredAsState()
+                    val openFocused by openInteractionSource.collectIsFocusedAsState()
+                    val openHighlighted = openPressed || openHovered || openFocused
+
+                    val openBgColor by animateColorAsState(
+                        targetValue = if (openHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                        animationSpec = tween(150),
+                        label = ""
+                    )
+                    val openBorderColor by animateColorAsState(
+                        targetValue = if (openHighlighted) Color.White else Color(0x1AFFFFFF),
+                        animationSpec = tween(150),
+                        label = ""
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(openBgColor)
+                            .border(1.dp, openBorderColor, RoundedCornerShape(12.dp))
+                            .focusRequester(manualOpenYoutubeFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
+                                    try { manualModeListFocusRequester.requestFocus() } catch (_: Exception) {}
+                                    true
+                                } else false
+                            }
+                            .clickable(
+                                interactionSource = openInteractionSource,
+                                indication = null
+                            ) {
+                                if (appStatus.first != AppStatus.Running) {
+                                    val intent = android.net.VpnService.prepare(context)
+                                    if (intent != null) {
+                                        vpnLauncher.launch(intent)
                                     } else {
+                                        startAll()
                                         launchYoutubeApp()
                                     }
+                                } else {
+                                    launchYoutubeApp()
                                 }
-                                .padding(vertical = 14.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (!isSmartTv) "Открыть YouTube" else if (isSmartTube) "SmartTube" else "Открыть YouTube",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-
-                        val resetInteractionSource = remember { MutableInteractionSource() }
-                        val resetPressed by resetInteractionSource.collectIsPressedAsState()
-                        val resetHovered by resetInteractionSource.collectIsHoveredAsState()
-                        val resetFocused by resetInteractionSource.collectIsFocusedAsState()
-                        val resetHighlighted = resetPressed || resetHovered || resetFocused
-
-                        val resetTextColor by animateColorAsState(
-                            targetValue = if (resetHighlighted) Color.White else Color(0xFFA1A1AA),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusProperties { down = navBarFocusRequester }
-                                .clickable(
-                                    interactionSource = resetInteractionSource,
-                                    indication = null
-                                ) {
-                                    stopAll()
-                                    com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy = null
-                                    saveIsSetupComplete(false)
-                                    saveCurrentTestIndex(0)
-                                    saveHasLaunchedTest(false)
-                                    saveTestStarted(true)
-                                    saveNoStrategiesWorked(false)
-                                    StrategyTestManager.startTesting(context)
-                                }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Подобрать лучший способ заново",
-                                color = resetTextColor,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    } else {
-                        val openInteractionSource = remember { MutableInteractionSource() }
-                        val openPressed by openInteractionSource.collectIsPressedAsState()
-                        val openHovered by openInteractionSource.collectIsHoveredAsState()
-                        val openFocused by openInteractionSource.collectIsFocusedAsState()
-                        val openHighlighted = openPressed || openHovered || openFocused
-
-                        val openBgColor by animateColorAsState(
-                            targetValue = if (openHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-                        val openBorderColor by animateColorAsState(
-                            targetValue = if (openHighlighted) Color.White else Color(0x1AFFFFFF),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(openBgColor)
-                                .border(1.5.dp, openBorderColor, RoundedCornerShape(12.dp))
-                                .onPreviewKeyEvent { event ->
-                                    if (event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
-                                        try { manualModeListFocusRequester.requestFocus() } catch (_: Exception) {}
-                                        true
-                                    } else false
-                                }
-                                .clickable(
-                                    interactionSource = openInteractionSource,
-                                    indication = null
-                                ) {
-                                    if (appStatus.first != AppStatus.Running) {
-                                        val intent = android.net.VpnService.prepare(context)
-                                        if (intent != null) {
-                                            vpnLauncher.launch(intent)
-                                        } else {
-                                            startAll()
-                                            launchYoutubeApp()
-                                        }
-                                    } else {
-                                        launchYoutubeApp()
-                                    }
-                                }
-                                .padding(vertical = 14.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (!isSmartTv) "Открыть YouTube" else if (isSmartTube) "SmartTube" else "Открыть YouTube",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-
+                            }
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = "Выберите стратегию обхода:",
-                            color = Color(0xFFA1A1AA),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium
+                            text = if (!isSmartTv) "Открыть YouTube" else if (isSmartTube) "SmartTube" else "Открыть YouTube",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
                         )
+                    }
 
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            StrategyTestManager.testResults.forEachIndexed { idx, item ->
-                                val (index, strategy, status) = item
-                                val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
-                                val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
-                                val displayStatus = when (manualStatus) {
-                                    "working" -> "Работает"
-                                    "failed" -> "Не работает"
-                                    else -> status.replace(" (Успешно)", "")
-                                }
-                                val statusColor = when (manualStatus) {
-                                    "working" -> Color(0xFF22C55E)
-                                    "failed" -> Color(0xFFEF4444)
-                                    else -> if (status.contains("мс")) Color(0xFF22C55E) else Color(0xFFEF4444)
-                                }
-                                val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
-                                val customName = StrategyTestManager.customNames[strategy]
-                                val notes = StrategyTestManager.strategyNotes[strategy]
-                                val isCurrent = activeCmd != null && activeCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
+                    AnimatedContent(
+                        targetState = manualMode,
+                        transitionSpec = {
+                            if (com.rupleide.netfix.data.performanceModeGlobal) {
+                                fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                            } else {
+                                val forward = targetState && !initialState
+                                (fadeIn(tween(220)) + androidx.compose.animation.scaleIn(
+                                    tween(220),
+                                    initialScale = if (forward) 0.96f else 1.04f
+                                )) togetherWith (fadeOut(tween(180)) + androidx.compose.animation.scaleOut(
+                                    tween(180),
+                                    targetScale = if (forward) 1.04f else 0.96f
+                                ))
+                            }
+                        },
+                        label = "modeTransition",
+                        contentAlignment = Alignment.TopCenter,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 0.dp)
+                    ) { isManual ->
+                        if (!isManual) {
+                            val resetInteractionSource = remember { MutableInteractionSource() }
+                            val resetPressed by resetInteractionSource.collectIsPressedAsState()
+                            val resetHovered by resetInteractionSource.collectIsHoveredAsState()
+                            val resetFocused by resetInteractionSource.collectIsFocusedAsState()
+                            val resetHighlighted = resetPressed || resetHovered || resetFocused
 
-                                val rowInteractionSource = remember { MutableInteractionSource() }
-                                val rowFocused by rowInteractionSource.collectIsFocusedAsState()
-                                val rowHovered by rowInteractionSource.collectIsHoveredAsState()
+                            val resetTextColor by animateColorAsState(
+                                targetValue = if (resetHighlighted) Color.White else Color(0xFFA1A1AA),
+                                animationSpec = tween(150),
+                                label = ""
+                            )
 
-                                val pinInteractionSource = remember { MutableInteractionSource() }
-                                val pinFocused by pinInteractionSource.collectIsFocusedAsState()
-                                val pinHovered by pinInteractionSource.collectIsHoveredAsState()
-
-                                val editInteractionSource = remember { MutableInteractionSource() }
-                                val editFocused by editInteractionSource.collectIsFocusedAsState()
-                                val editHovered by editInteractionSource.collectIsHoveredAsState()
-
-                                val deleteInteractionSource = remember { MutableInteractionSource() }
-                                val deleteFocused by deleteInteractionSource.collectIsFocusedAsState()
-                                val deleteHovered by deleteInteractionSource.collectIsHoveredAsState()
-
-                                val rowHighlighted = rowFocused || rowHovered || pinFocused || pinHovered || editFocused || editHovered || deleteFocused || deleteHovered
-
-                                val rowBgColor by animateColorAsState(
-                                    targetValue = if (rowHighlighted) Color(0xFF38383A) else if (isCurrent) Color(0xFF3B82F6).copy(alpha = 0.15f) else Color(0xFF242426),
-                                    animationSpec = tween(150),
-                                    label = ""
-                                )
-                                val rowBorderColor by animateColorAsState(
-                                    targetValue = if (rowHighlighted) Color.White else if (isCurrent) Color(0xFF3B82F6) else Color(0x1AFFFFFF),
-                                    animationSpec = tween(150),
-                                    label = ""
-                                )
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(rowBgColor)
-                                        .border(1.5.dp, rowBorderColor, RoundedCornerShape(8.dp))
-                                        .padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .then(if (idx == 0) Modifier.focusRequester(manualModeListFocusRequester) else Modifier)
-                                            .clickable(
-                                                interactionSource = rowInteractionSource,
-                                                indication = null
-                                            ) {
-                                                showActionMenuForStrategy = item
-                                            },
-                                        verticalAlignment = Alignment.CenterVertically
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusProperties { down = navBarFocusRequester }
+                                    .clickable(
+                                        interactionSource = resetInteractionSource,
+                                        indication = null
                                     ) {
-                                        Column(
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(
-                                                text = StrategyTestManager.getStrategyName(strategy, context),
-                                                color = Color(0xFFF4F4F5),
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 14.sp
-                                            )
-                                            if (advancedMode) {
-                                                Text(
-                                                    text = strategy,
-                                                    color = Color(0xFFA1A1AA),
-                                                    fontSize = 11.sp,
-                                                    maxLines = 1
-                                                )
-                                                if (!notes.isNullOrBlank()) {
-                                                    Text(
-                                                        text = "Заметка: $notes",
-                                                        color = Color(0xFF7C6AF7),
-                                                        fontSize = 11.sp,
-                                                        maxLines = 2
-                                                    )
-                                                }
-                                            }
+                                        com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог выбора типа тестирования YouTube")
+                                        showTestingTypeDialog = true
+                                    },
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "Подобрать лучший способ заново",
+                                    color = resetTextColor,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        } else {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Выберите стратегию обхода:",
+                                    color = Color(0xFFA1A1AA),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    getSortedStrategies().forEachIndexed { idx, item ->
+                                        val (index, strategy, status) = item
+                                        val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                                        val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
+                                        val displayStatus = when (manualStatus) {
+                                            "working" -> "Работает"
+                                            "failed" -> "Не работает"
+                                            else -> status.replace(" (Успешно)", "")
                                         }
+                                        val statusColor = when (manualStatus) {
+                                            "working" -> Color(0xFF22C55E)
+                                            "failed" -> Color(0xFFEF4444)
+                                            else -> if (status.contains("мс")) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                        }
+                                        val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
+                                        val customName = StrategyTestManager.customNames[strategy]
+                                        val notes = StrategyTestManager.strategyNotes[strategy]
+                                        val currentCmd = activeCmd
+                                 val isCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
 
-                                        Text(
-                                            text = displayStatus,
-                                            color = statusColor,
-                                            fontWeight = FontWeight.Medium,
-                                            fontSize = 13.sp,
-                                            modifier = Modifier.padding(horizontal = 8.dp)
+                                        val rowInteractionSource = remember { MutableInteractionSource() }
+                                        val rowFocused by rowInteractionSource.collectIsFocusedAsState()
+                                        val rowHovered by rowInteractionSource.collectIsHoveredAsState()
+
+                                        val pinInteractionSource = remember { MutableInteractionSource() }
+                                        val pinFocused by pinInteractionSource.collectIsFocusedAsState()
+                                        val pinHovered by pinInteractionSource.collectIsHoveredAsState()
+
+                                        val editInteractionSource = remember { MutableInteractionSource() }
+                                        val editFocused by editInteractionSource.collectIsFocusedAsState()
+                                        val editHovered by editInteractionSource.collectIsHoveredAsState()
+
+                                        val deleteInteractionSource = remember { MutableInteractionSource() }
+                                        val deleteFocused by deleteInteractionSource.collectIsFocusedAsState()
+                                        val deleteHovered by deleteInteractionSource.collectIsHoveredAsState()
+
+                                        val rowHighlighted = rowFocused || rowHovered || pinFocused || pinHovered || editFocused || editHovered || deleteFocused || deleteHovered
+
+                                        val rowBgColor by animateColorAsState(
+                                            targetValue = if (rowHighlighted) Color(0xFF38383A) else if (isCurrent) Color(0xFF2D2D30) else Color(0xFF242426),
+                                            animationSpec = tween(150),
+                                            label = ""
                                         )
-                                    }
+                                        val rowBorderColor by animateColorAsState(
+                                            targetValue = if (rowHighlighted) Color.White else Color(0x1AFFFFFF),
+                                            animationSpec = tween(150),
+                                            label = ""
+                                        )
 
-                                    if (advancedMode) {
                                         Row(
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(rowBgColor)
+                                                .border(1.5.dp, rowBorderColor, RoundedCornerShape(12.dp))
+                                                .padding(12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                             val pinHighlighted = pinFocused || pinHovered
-                                            Box(
+                                            Row(
                                                 modifier = Modifier
-                                                    .size(28.dp)
-                                                    .background(if (pinHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
+                                                    .weight(1f)
+                                                    .then(if (idx == 0) Modifier.focusRequester(manualModeListFocusRequester) else Modifier)
                                                     .clickable(
-                                                        interactionSource = pinInteractionSource,
+                                                        interactionSource = rowInteractionSource,
                                                         indication = null
                                                     ) {
-                                                        StrategyTestManager.togglePin(context, strategy)
+                                                        showActionMenuForStrategy = item
                                                     },
-                                                contentAlignment = Alignment.Center
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Icon(
-                                                    painter = painterResource(id = if (isPinned) R.drawable.ic_star_solid else R.drawable.ic_star_custom),
-                                                    contentDescription = "Pin",
-                                                    tint = if (isPinned) Color(0xFFFBBF24) else Color(0xFFA1A1AA),
-                                                    modifier = Modifier.size(18.dp)
+                                                Column(
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Text(
+                                                        text = StrategyTestManager.getStrategyName(strategy, context),
+                                                        color = Color(0xFFF4F4F5),
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        fontSize = 14.sp
+                                                    )
+                                                    if (advancedMode) {
+                                                        Text(
+                                                            text = strategy,
+                                                            color = Color(0xFFA1A1AA),
+                                                            fontSize = 11.sp,
+                                                            maxLines = 1
+                                                        )
+                                                        if (!notes.isNullOrBlank()) {
+                                                            Text(
+                                                                text = "Заметка: $notes",
+                                                                color = Color(0xFFA1A1AA),
+                                                                fontSize = 11.sp,
+                                                                maxLines = 2
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Text(
+                                                    text = displayStatus,
+                                                    color = statusColor,
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 13.sp,
+                                                    modifier = Modifier.padding(horizontal = 8.dp)
                                                 )
                                             }
 
-                                            val editHighlighted = editFocused || editHovered
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(28.dp)
-                                                    .background(if (editHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
-                                                    .clickable(
-                                                        interactionSource = editInteractionSource,
-                                                        indication = null
+                                            if (advancedMode) {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                     val pinHighlighted = pinFocused || pinHovered
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(28.dp)
+                                                            .background(if (pinHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
+                                                            .clickable(
+                                                                interactionSource = pinInteractionSource,
+                                                                indication = null
+                                                            ) {
+                                                                StrategyTestManager.togglePin(context, strategy)
+                                                            },
+                                                        contentAlignment = Alignment.Center
                                                     ) {
-                                                        editingStrategy = strategy
-                                                        editNameText = customName ?: ""
-                                                        editNotesText = notes ?: ""
-                                                    },
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    painter = painterResource(id = R.drawable.ic_edit_custom),
-                                                    contentDescription = "Edit",
-                                                    tint = Color(0xFFA1A1AA),
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
+                                                        Icon(
+                                                            painter = painterResource(id = if (isPinned) R.drawable.ic_star_solid else R.drawable.ic_star_custom),
+                                                            contentDescription = "Pin",
+                                                            tint = if (isPinned) Color(0xFFFBBF24) else Color(0xFFA1A1AA),
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    }
 
-                                            val deleteHighlighted = deleteFocused || deleteHovered
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(28.dp)
-                                                    .background(if (deleteHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
-                                                    .clickable(
-                                                        interactionSource = deleteInteractionSource,
-                                                        indication = null
+                                                    val editHighlighted = editFocused || editHovered
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(28.dp)
+                                                            .background(if (editHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
+                                                            .clickable(
+                                                                interactionSource = editInteractionSource,
+                                                                indication = null
+                                                            ) {
+                                                                editingStrategy = strategy
+                                                                editNameText = customName ?: ""
+                                                                editNotesText = notes ?: ""
+                                                            },
+                                                        contentAlignment = Alignment.Center
                                                     ) {
-                                                        deletingStrategy = strategy
-                                                     },
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    painter = painterResource(id = R.drawable.ic_delete),
-                                                    contentDescription = "Delete",
-                                                    tint = Color(0xFFEF4444),
-                                                    modifier = Modifier.size(18.dp)
-                                                )
+                                                        Icon(
+                                                            painter = painterResource(id = R.drawable.ic_edit_custom),
+                                                            contentDescription = "Edit",
+                                                            tint = Color(0xFFA1A1AA),
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    }
+
+                                                    val deleteHighlighted = deleteFocused || deleteHovered
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(28.dp)
+                                                            .background(if (deleteHighlighted) Color(0x33FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
+                                                            .clickable(
+                                                                interactionSource = deleteInteractionSource,
+                                                                indication = null
+                                                            ) {
+                                                                deletingStrategy = strategy
+                                                             },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Icon(
+                                                            painter = painterResource(id = R.drawable.ic_delete),
+                                                            contentDescription = "Delete",
+                                                            tint = Color(0xFFEF4444),
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1286,7 +1381,6 @@ fun YoutubeTab(
                         }
                     }
 
-
                 }
             } else if (noStrategiesWorked) {
                 Column(
@@ -1294,16 +1388,26 @@ fun YoutubeTab(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text(
-                        text = "Не нашли рабочий способ",
-                        color = Color(0xFFEF4444),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Не нашли рабочий способ",
+                            color = Color(0xFFEF4444),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
                     Text(
                         text = "Попробуйте улучшить соединение и отключить сторонние VPN-приложения, затем пройдите сканирование заново.\n\nТакже вы можете нажать на кнопку возврата к списку стратегий ниже и попробовать выбрать или настроить конфигурацию вручную.",
                         color = Color(0xFFA1A1AA),
@@ -1379,7 +1483,7 @@ fun YoutubeTab(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(backListBgColor)
-                            .border(1.5.dp, backListBorderColor, RoundedCornerShape(12.dp))
+                            .border(1.dp, backListBorderColor, RoundedCornerShape(12.dp))
                             .clickable(
                                 interactionSource = backListInteractionSource,
                                 indication = null
@@ -1395,7 +1499,7 @@ fun YoutubeTab(
                             text = "Выбрать вручную",
                             color = Color(0xFFA1A1AA),
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
+                            fontSize = 13.sp
                         )
                     }
                 }
@@ -1405,16 +1509,26 @@ fun YoutubeTab(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text(
-                        text = "Настройка YouTube",
-                        color = Color(0xFFF4F4F5),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_youtube),
+                            contentDescription = null,
+                            tint = Color(0xFFF4F4F5),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Настройка YouTube",
+                            color = Color(0xFFF4F4F5),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
                     Text(
                         text = "Для работы YouTube нужно подобрать подходящую стратегию обхода блокировок под вашу сеть.",
                         color = Color(0xFFA1A1AA),
@@ -1510,7 +1624,7 @@ fun YoutubeTab(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(testBtnBgColor)
-                                .border(1.5.dp, testBtnBorderColor, RoundedCornerShape(12.dp))
+                                .border(1.dp, testBtnBorderColor, RoundedCornerShape(12.dp))
                                 .focusRequester(wizardPlayFocusRequester)
                                 .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                 .clickable(
@@ -1536,14 +1650,14 @@ fun YoutubeTab(
                                         StrategyTestManager.startTesting(context)
                                     }
                                 }
-                                .padding(vertical = 16.dp),
+                                .padding(vertical = 14.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = "Подобрать способ автоматически",
                                 color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
                             )
                         }
                     } else {
@@ -1558,7 +1672,7 @@ fun YoutubeTab(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            StrategyTestManager.testResults.forEachIndexed { idx, item ->
+                            getSortedStrategies().forEachIndexed { idx, item ->
                                 val (index, strategy, status) = item
                                 val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
                                 val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
@@ -1575,7 +1689,8 @@ fun YoutubeTab(
                                 val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
                                 val customName = StrategyTestManager.customNames[strategy]
                                 val notes = StrategyTestManager.strategyNotes[strategy]
-                                val isCurrent = activeCmd != null && activeCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
+                                val currentCmd = activeCmd
+                                 val isCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
 
                                 val rowInteractionSource = remember { MutableInteractionSource() }
                                 val rowFocused by rowInteractionSource.collectIsFocusedAsState()
@@ -1647,7 +1762,7 @@ fun YoutubeTab(
                                                 if (!notes.isNullOrBlank()) {
                                                     Text(
                                                         text = "Заметка: $notes",
-                                                        color = Color(0xFF7C6AF7),
+                                                        color = Color(0xFFA1A1AA),
                                                         fontSize = 11.sp,
                                                         maxLines = 2
                                                     )
@@ -1740,45 +1855,54 @@ fun YoutubeTab(
                         }
                     }
 
-
                 }
             } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                        .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    val wasManual = sharedPrefs.getBoolean("was_manual_selection", false)
-                    val headerText = if (wasManual) {
-                        "Проверка выбранной стратегии"
-                    } else if (!isSmartTv) {
-                        if (hasLaunchedTest) {
-                            "Шаг ${currentTestIndex + 1}: Подбор способа обхода"
-                        } else if (currentTestIndex == 0) {
-                            "Финальный шаг 🎉"
-                        } else {
-                            "Пробуем Способ ${currentTestIndex + 1}"
-                        }
-                    } else if (!isSmartTube) {
-                        "Шаг ${currentTestIndex + 1}: Настройка Официального YouTube"
-                    } else if (hasLaunchedTest) {
+                val wasManual = sharedPrefs.getBoolean("was_manual_selection", false)
+                val headerText = if (wasManual) {
+                    "Проверка выбранной стратегии"
+                } else if (!isSmartTv) {
+                    if (hasLaunchedTest) {
                         "Шаг ${currentTestIndex + 1}: Подбор способа обхода"
                     } else if (currentTestIndex == 0) {
                         "Финальный шаг 🎉"
                     } else {
                         "Пробуем Способ ${currentTestIndex + 1}"
                     }
+                } else if (!isSmartTube) {
+                    "Шаг ${currentTestIndex + 1}: Настройка Официального YouTube"
+                } else if (hasLaunchedTest) {
+                    "Шаг ${currentTestIndex + 1}: Подбор способа обхода"
+                } else if (currentTestIndex == 0) {
+                    "Финальный шаг 🎉"
+                } else {
+                    "Пробуем Способ ${currentTestIndex + 1}"
+                }
 
-                    Text(
-                        text = headerText,
-                        color = Color(0xFFF4F4F5),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = Color(0xFFF4F4F5),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = headerText,
+                            color = Color(0xFFF4F4F5),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
                     if (!hasLaunchedTest) {
                         val descText = if (wasManual) {
                             if (!isSmartTv) {
@@ -1842,7 +1966,7 @@ fun YoutubeTab(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(playBgColor)
-                                .border(1.5.dp, playBorderColor, RoundedCornerShape(12.dp))
+                                .border(1.dp, playBorderColor, RoundedCornerShape(12.dp))
                                 .focusRequester(wizardPlayFocusRequester)
                                 .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                 .clickable(
@@ -1865,14 +1989,14 @@ fun YoutubeTab(
                                         saveHasLaunchedTest(true)
                                     }
                                 }
-                                .padding(vertical = 16.dp),
+                                .padding(vertical = 14.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = if (!isSmartTv) "Открыть YouTube" else if (isSmartTube) "SmartTube" else "Открыть YouTube",
                                 color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
                             )
                         }
                     } else {
@@ -1913,7 +2037,7 @@ fun YoutubeTab(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(okBgColor)
-                                    .border(1.5.dp, okBorderColor, RoundedCornerShape(12.dp))
+                                    .border(1.dp, okBorderColor, RoundedCornerShape(12.dp))
                                     .focusRequester(wizardPlayFocusRequester)
                                     .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                     .clickable(
@@ -1941,8 +2065,8 @@ fun YoutubeTab(
                                 Text(
                                     text = "👍 Работает",
                                     color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
                                 )
                             }
 
@@ -1968,7 +2092,7 @@ fun YoutubeTab(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(failBgColor)
-                                    .border(1.5.dp, failBorderColor, RoundedCornerShape(12.dp))
+                                    .border(1.dp, failBorderColor, RoundedCornerShape(12.dp))
                                     .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                     .clickable(
                                         interactionSource = failInteractionSource,
@@ -2007,8 +2131,8 @@ fun YoutubeTab(
                                 Text(
                                     text = "👎 Не работает",
                                     color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
                                 )
                             }
                         }
@@ -2019,7 +2143,6 @@ fun YoutubeTab(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-                                .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
                                 .padding(20.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
@@ -2076,361 +2199,159 @@ fun YoutubeTab(
                                     fontSize = 16.sp
                                 )
                             }
-                        }
                     }
                 }
             }
-                    if (editingStrategy != null) {
-                Dialog(onDismissRequest = { editingStrategy = null }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1E1E1E))
-                    .border(1.5.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Настройка стратегии",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-
-                Text(
-                    text = "Название:",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-
-                OutlinedTextField(
-                    value = editNameText,
-                    onValueChange = { editNameText = it },
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Кастомное имя (например, Дом, Работа)", color = Color(0xFFA1A1AA)) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF3B82F6),
-                        unfocusedBorderColor = Color(0x33FFFFFF),
-                        focusedContainerColor = Color(0xFF161616),
-                        unfocusedContainerColor = Color(0xFF161616)
-                    )
-                )
-
-                Text(
-                    text = "Заметка:",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-
-                OutlinedTextField(
-                    value = editNotesText,
-                    onValueChange = { editNotesText = it },
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Заметка/комментарий к стратегии", color = Color(0xFFA1A1AA)) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF3B82F6),
-                        unfocusedBorderColor = Color(0x33FFFFFF),
-                        focusedContainerColor = Color(0xFF161616),
-                        unfocusedContainerColor = Color(0xFF161616)
-                    )
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color(0xFFA1A1AA),
-                        modifier = Modifier
-                            .clickable { editingStrategy = null }
-                            .padding(8.dp)
-                    )
-                    Text(
-                        text = "Сохранить",
-                        color = Color(0xFF3B82F6),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .clickable {
-                                val strategy = editingStrategy!!
-                                StrategyTestManager.renameStrategy(context, strategy, editNameText)
-                                StrategyTestManager.updateNotes(context, strategy, editNotesText)
-                                editingStrategy = null
-                            }
-                            .padding(8.dp)
-                    )
-                }
             }
-                }
             }
 
-            if (deletingStrategy != null) {
-                Dialog(onDismissRequest = { deletingStrategy = null }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1E1E1E))
-                    .border(1.5.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    text = "Удалить стратегию?",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Text(
-                    text = "Вы действительно хотите удалить эту стратегию из списка?",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color(0xFFA1A1AA),
-                        modifier = Modifier
-                            .clickable { deletingStrategy = null }
-                            .padding(8.dp)
-                    )
-                    Text(
-                        text = "Удалить",
-                        color = Color(0xFFEF4444),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .clickable {
-                                StrategyTestManager.deleteStrategy(context, deletingStrategy!!)
-                                deletingStrategy = null
-                            }
-                            .padding(8.dp)
-                    )
-                }
-            }
-                }
-            }
-
-            if (showActionMenuForStrategy != null) {
-                val item = showActionMenuForStrategy!!
-                val index = item.first
-                val strategy = item.second
-                val friendlyName = StrategyTestManager.getStrategyName(strategy, context)
-
-                Dialog(onDismissRequest = { showActionMenuForStrategy = null }) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF1E1E1E))
-                            .border(1.5.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = friendlyName,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Text(
-                            text = "Выберите действие для этой конфигурации:",
-                            color = Color(0xFFA1A1AA),
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        val applyInteractionSource = remember { MutableInteractionSource() }
-                        val applyPressed by applyInteractionSource.collectIsPressedAsState()
-                        val applyHovered by applyInteractionSource.collectIsHoveredAsState()
-                        val applyFocused by applyInteractionSource.collectIsFocusedAsState()
-                        val applyHighlighted = applyPressed || applyHovered || applyFocused
-                        val applyBgColor by animateColorAsState(
-                            targetValue = if (applyHighlighted) Color(0xFF3B82F6).copy(alpha = 0.85f) else Color(0xFF3B82F6),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(applyBgColor)
-                                .clickable(
-                                    interactionSource = applyInteractionSource,
-                                    indication = null
-                                ) {
-                                    StrategyTestManager.applyStrategy(context, index, strategy)
-                                    saveIsSetupComplete(true)
-                                    saveTestStarted(false)
-                                    saveHasLaunchedTest(false)
-                                    showActionMenuForStrategy = null
-                                }
-                                .padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Применить сразу",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-
-                        val testInteractionSource = remember { MutableInteractionSource() }
-                        val testPressed by testInteractionSource.collectIsPressedAsState()
-                        val testHovered by testInteractionSource.collectIsHoveredAsState()
-                        val testFocused by testInteractionSource.collectIsFocusedAsState()
-                        val testHighlighted = testPressed || testHovered || testFocused
-                        val testBgColor by animateColorAsState(
-                            targetValue = if (testHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(testBgColor)
-                                .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(10.dp))
-                                .clickable(
-                                    interactionSource = testInteractionSource,
-                                    indication = null
-                                ) {
-                                    sharedPrefs.edit().putBoolean("was_manual_selection", true).apply()
-                                    StrategyTestManager.applyStrategy(context, index, strategy)
-                                    saveIsSetupComplete(false)
-                                    saveTestStarted(true)
-                                    saveHasLaunchedTest(false)
-                                    saveCurrentTestIndex(index)
-                                    showActionMenuForStrategy = null
-                                    showAllStrategiesList = false
-                                }
-                                .padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Проверить работу",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-
-                        Text(
-                            text = "Отмена",
-                            color = Color(0xFFA1A1AA),
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .clickable { showActionMenuForStrategy = null }
-                                .padding(vertical = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            if (showVpnDeniedDialog) {
-                Dialog(onDismissRequest = { showVpnDeniedDialog = false }) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF1E1E1E))
-                            .border(1.5.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Требуется разрешение",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Text(
-                            text = "Для работы обхода блокировок нужно разрешить подключение VPN в системе.",
-                            color = Color(0xFFA1A1AA),
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        val retryInteractionSource = remember { MutableInteractionSource() }
-                        val retryPressed by retryInteractionSource.collectIsPressedAsState()
-                        val retryHovered by retryInteractionSource.collectIsHoveredAsState()
-                        val retryFocused by retryInteractionSource.collectIsFocusedAsState()
-                        val retryHighlighted = retryPressed || retryHovered || retryFocused
-                        val retryBgColor by animateColorAsState(
-                            targetValue = if (retryHighlighted) Color(0xFF3B82F6).copy(alpha = 0.85f) else Color(0xFF3B82F6),
-                            animationSpec = tween(150),
-                            label = ""
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(retryBgColor)
-                                .clickable(
-                                    interactionSource = retryInteractionSource,
-                                    indication = null
-                                ) {
-                                    showVpnDeniedDialog = false
-                                    val intent = android.net.VpnService.prepare(context)
-                                    if (intent != null) {
-                                        vpnLauncher.launch(intent)
-                                    } else {
-                                        startAll()
-                                        if (!isSetupComplete && testStarted) {
-                                            launchYoutubeApp()
-                                            saveHasLaunchedTest(true)
-                                        } else {
-                                            launchYoutubeApp()
-                                        }
-                                    }
-                                }
-                                .padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Попробовать снова",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-
-                        Text(
-                            text = "Отмена",
-                            color = Color(0xFFA1A1AA),
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .clickable { showVpnDeniedDialog = false }
-                                .padding(vertical = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(navOverlayReserve))
+        NetFixEditStrategySheet(
+        visible = editingStrategy != null,
+        onDismissRequest = { editingStrategy = null },
+        nameValue = editNameText,
+        onNameChange = { editNameText = it },
+        notesValue = editNotesText,
+        onNotesChange = { editNotesText = it },
+        onSave = {
+            val strategy = editingStrategy!!
+            StrategyTestManager.renameStrategy(context, strategy, editNameText)
+            StrategyTestManager.updateNotes(context, strategy, editNotesText)
+            editingStrategy = null
         }
+    )
+
+            NetFixStrategySheet(
+        visible = deletingStrategy != null,
+        onDismissRequest = { deletingStrategy = null },
+        title = "Удалить стратегию?",
+        subtitle = "Вы действительно хотите удалить эту стратегию из списка?",
+        iconRes = R.drawable.ic_delete,
+        actions = listOf(
+            StrategyAction(
+                label = "Удалить",
+                destructive = true,
+                bold = true
+            ) {
+                StrategyTestManager.deleteStrategy(context, deletingStrategy!!)
+                deletingStrategy = null
+            }
+        )
+    )
+
+            val menuStrategy = showActionMenuForStrategy?.second
+    val menuFriendlyName = menuStrategy?.let { StrategyTestManager.getStrategyName(it, context) } ?: ""
+    val menuIndex = showActionMenuForStrategy?.first ?: 0
+
+    NetFixStrategySheet(
+        visible = showActionMenuForStrategy != null,
+        onDismissRequest = { showActionMenuForStrategy = null },
+        title = menuFriendlyName,
+        subtitle = "Выберите действие для этой конфигурации:",
+        iconRes = R.drawable.ic_settings,
+        actions = listOf(
+            StrategyAction(
+                label = "Применить сразу",
+                bold = true
+            ) {
+                if (menuStrategy != null) {
+                    StrategyTestManager.applyStrategy(context, menuIndex, menuStrategy)
+                    activeCmd = menuStrategy
+                    saveIsSetupComplete(true)
+                    saveTestStarted(false)
+                    saveHasLaunchedTest(false)
+                }
+                showActionMenuForStrategy = null
+            },
+            StrategyAction(
+                label = "Проверить работу"
+            ) {
+                if (menuStrategy != null) {
+                    sharedPrefs.edit().putBoolean("was_manual_selection", true).apply()
+                    StrategyTestManager.applyStrategy(context, menuIndex, menuStrategy)
+                    activeCmd = menuStrategy
+                    saveIsSetupComplete(false)
+                    saveTestStarted(true)
+                    saveHasLaunchedTest(false)
+                    saveCurrentTestIndex(menuIndex)
+                }
+                showActionMenuForStrategy = null
+                showAllStrategiesList = false
+            }
+        )
+    )
+
+            NetFixStrategySheet(
+        visible = showVpnDeniedDialog,
+        onDismissRequest = { showVpnDeniedDialog = false },
+        title = "Требуется разрешение",
+        subtitle = "Для работы обхода блокировок нужно разрешить подключение VPN в системе.",
+        iconRes = R.drawable.ic_info,
+        actions = listOf(
+            StrategyAction(
+                label = "Попробовать снова",
+                bold = true
+            ) {
+                showVpnDeniedDialog = false
+                val intent = android.net.VpnService.prepare(context)
+                if (intent != null) {
+                    vpnLauncher.launch(intent)
+                } else {
+                    startAll()
+                    if (!isSetupComplete && testStarted) {
+                        launchYoutubeApp()
+                        saveHasLaunchedTest(true)
+                    } else {
+                        launchYoutubeApp()
+                    }
+                }
+            }
+        )
+    )
+
+            NetFixStrategySheet(
+        visible = showTestingTypeDialog,
+        onDismissRequest = { showTestingTypeDialog = false },
+        title = "Подобрать способ обхода",
+        subtitle = "Как вы хотите найти рабочую схему обхода ограничений YouTube для вашей сети?",
+        iconRes = R.drawable.ic_smart_tv,
+        actions = listOf(
+            StrategyAction(
+                label = "Проверить способы по очереди",
+                bold = true
+            ) {
+                showTestingTypeDialog = false
+                stopAll()
+                val strategy = presets.getOrNull(0) ?: "-i 127.0.0.1 -p 1080"
+                com.rupleide.netfix.core.debug.AppDebugManager.log("Выбран пошаговый перебор стратегий YouTube")
+                sharedPrefs.edit()
+                    .putString("byedpi_cmd_args", strategy)
+                    .putBoolean("byedpi_enable_cmd_settings", true)
+                    .putBoolean("was_manual_selection", false)
+                    .apply()
+                com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy = strategy
+                saveIsSetupComplete(false)
+                saveTestStarted(true)
+                saveHasLaunchedTest(false)
+                saveCurrentTestIndex(0)
+                saveNoStrategiesWorked(false)
+            },
+            StrategyAction(
+                label = "Провести сканирование ещё раз"
+            ) {
+                showTestingTypeDialog = false
+                stopAll()
+                com.rupleide.netfix.core.debug.AppDebugManager.log("Запущен автоподбор стратегий YouTube (сканирование)")
+                com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy = null
+                saveIsSetupComplete(false)
+                saveCurrentTestIndex(0)
+                saveHasLaunchedTest(false)
+                saveTestStarted(true)
+                saveNoStrategiesWorked(false)
+                StrategyTestManager.startTesting(context)
+            }
+        )
+    )
+            }
         }
     }
 }

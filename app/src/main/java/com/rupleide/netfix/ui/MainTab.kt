@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import android.content.res.Configuration
 import android.net.TrafficStats
 import android.net.Uri
@@ -18,6 +19,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -47,6 +52,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.rupleide.netfix.ui.components.NetFixUpdateSheet
+import com.rupleide.netfix.ui.components.NetFixHintSheet
+import com.rupleide.netfix.ui.components.NetFixUnloadSheet
+import com.rupleide.netfix.ui.components.UnloadOption
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
@@ -62,6 +71,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -99,9 +109,22 @@ import androidx.lifecycle.repeatOnLifecycle
 fun MainTab(
     focusRequester: FocusRequester,
     navBarFocusRequester: FocusRequester,
+    playEntranceAnimation: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    val headerProgress = rememberEntranceProgress(playEntranceAnimation, delayMillis = 20L, dampingRatio = 1f, stiffness = 180f)
+    val buttonProgress = rememberEntranceProgress(playEntranceAnimation, delayMillis = 90L, dampingRatio = 0.62f, stiffness = 150f)
+    val cardProgress = rememberEntranceProgress(playEntranceAnimation, delayMillis = 190L, dampingRatio = 0.86f, stiffness = 160f)
+    val quickButtonsProgress = rememberEntranceProgress(playEntranceAnimation, delayMillis = 250L, dampingRatio = 0.86f, stiffness = 160f)
+
+    val headerAlpha = headerProgress.coerceIn(0f, 1f)
+    val buttonAlpha = buttonProgress.coerceIn(0f, 1f)
+    val buttonScale = 0.62f + 0.38f * buttonProgress
+    val cardAlpha = cardProgress.coerceIn(0f, 1f)
+    val quickButtonsAlpha = quickButtonsProgress.coerceIn(0f, 1f)
+
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val prefs = remember { context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE) }
     var telegramProxyEnabledByUser by remember { mutableStateOf(prefs.getBoolean("telegram_proxy_enabled_by_user", true)) }
     var wantsYoutubeBypass by remember { mutableStateOf(prefs.getBoolean("wants_youtube_bypass", true)) }
@@ -120,9 +143,21 @@ fun MainTab(
             prefs.unregisterOnSharedPreferenceChangeListener(listener)
         }
     }
-    val updateInfo = com.rupleide.netfix.data.updateInfoGlobal
+    val realUpdateInfo = com.rupleide.netfix.data.updateInfoGlobal
+    val forceUpdateTest = com.rupleide.netfix.data.forceUpdateTestGlobal
+    val updateInfo = if (forceUpdateTest) {
+        com.rupleide.netfix.core.update.UpdateManager.UpdateInfo(
+            version = "3.1.0-test",
+            downloadUrl = "https://github.com/rupleide/NetFixMobile/releases/download/v3.1.0-test/app-release.apk",
+            description = "Тестовое обновление для проверки шторки.\n- Добавлена новая анимация\n- Оптимизирован расход памяти"
+        )
+    } else {
+        realUpdateInfo
+    }
     val autoUpdateEnabled = com.rupleide.netfix.core.update.UpdateManager.isAutoUpdateEnabled(context)
-    var showUpdateDialog by remember(updateInfo) { mutableStateOf(updateInfo != null && autoUpdateEnabled) }
+    var showUpdateDialog by remember(updateInfo, forceUpdateTest) { 
+        mutableStateOf((updateInfo != null && autoUpdateEnabled) || forceUpdateTest) 
+    }
     var isDownloadingUpdate by remember { mutableStateOf(false) }
     var updateDownloadProgress by remember { mutableStateOf(0f) }
     var updateErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -133,6 +168,9 @@ fun MainTab(
     var showUnloadDialog by remember { mutableStateOf(false) }
     var showHintDialog by remember { mutableStateOf(false) }
     val hintPrefs = remember { context.getSharedPreferences("netfix_hints", Context.MODE_PRIVATE) }
+    LaunchedEffect(showUpdateDialog, showUnloadDialog, showHintDialog) {
+        com.rupleide.netfix.data.isActionSheetVisibleGlobal = showUpdateDialog || showUnloadDialog || showHintDialog
+    }
 
     val lifecycleOwnerForSmartTube = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwnerForSmartTube) {
@@ -162,36 +200,38 @@ fun MainTab(
 
     var elapsedSeconds by remember { mutableStateOf(0) }
 
-    LaunchedEffect(currentStatus) {
-        while (true) {
-            val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-            val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
-            var open = false
-            if (wantsTelegram) {
-                val port = TgProxyController.getPort(context)
-                open = withContext(Dispatchers.IO) {
-                    TgProxyController.isPortOpen(
-                        TgProxyController.DEFAULT_BIND_IP,
-                        port,
-                        500
-                    )
+    LaunchedEffect(currentStatus, isStarting, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
+                val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
+                var open = false
+                if (wantsTelegram) {
+                    val port = TgProxyController.getPort(context)
+                    open = withContext(Dispatchers.IO) {
+                        TgProxyController.isPortOpen(
+                            TgProxyController.DEFAULT_BIND_IP,
+                            port,
+                            500
+                        )
+                    }
+                    isTgProxyRunning = open
+                    com.rupleide.netfix.data.isTgProxyRunningGlobal = open
+                } else {
+                    isTgProxyRunning = false
+                    com.rupleide.netfix.data.isTgProxyRunningGlobal = false
                 }
-                isTgProxyRunning = open
-                com.rupleide.netfix.data.isTgProxyRunningGlobal = open
-            } else {
-                isTgProxyRunning = false
-                com.rupleide.netfix.data.isTgProxyRunningGlobal = false
+                val conditionToStopStarting = when {
+                    wantsYoutube && wantsTelegram -> currentStatus == AppStatus.Running && open
+                    wantsYoutube -> currentStatus == AppStatus.Running
+                    wantsTelegram -> open
+                    else -> true
+                }
+                if (conditionToStopStarting) {
+                    isStarting = false
+                }
+                delay(if (isStarting) 1000 else 5000)
             }
-            val conditionToStopStarting = when {
-                wantsYoutube && wantsTelegram -> currentStatus == AppStatus.Running && open
-                wantsYoutube -> currentStatus == AppStatus.Running
-                wantsTelegram -> open
-                else -> true
-            }
-            if (conditionToStopStarting) {
-                isStarting = false
-            }
-            delay(1000)
         }
     }
 
@@ -233,34 +273,33 @@ fun MainTab(
 
     var latencyMs by remember { mutableStateOf(-1) }
 
-    val lifecycleOwner = LocalLifecycleOwner.current
-
     LaunchedEffect(currentStatus, performanceModeGlobal, lifecycleOwner) {
-        if (performanceModeGlobal) {
-            if (currentStatus == AppStatus.Running) {
+        if (currentStatus != AppStatus.Running) {
+            latencyMs = -1
+        } else {
+            if (performanceModeGlobal) {
                 latencyMs = withContext(Dispatchers.IO) {
                     TgProxyController.measureLatency("1.1.1.1", 53)
                 }
             } else {
-                latencyMs = -1
-            }
-        } else {
-            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                while (true) {
-                    latencyMs = withContext(Dispatchers.IO) {
-                        TgProxyController.measureLatency("1.1.1.1", 53)
+                lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    while (true) {
+                        latencyMs = withContext(Dispatchers.IO) {
+                            TgProxyController.measureLatency("1.1.1.1", 53)
+                        }
+                        delay(20000)
                     }
-                    delay(10000)
                 }
             }
         }
     }
 
-
-
     fun startAll() {
-        isStarting = true
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
+        val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
+        com.rupleide.netfix.core.debug.AppDebugManager.log("Запуск всех служб (YouTube: $wantsYoutube, Telegram: $wantsTelegram)")
+        isStarting = true
         prefs.edit()
             .putBoolean("service_enabled", true)
             .apply()
@@ -271,10 +310,8 @@ fun MainTab(
             )
         } catch (_: Exception) {}
         
-        val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
-        val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-
         if (wantsYoutube) {
+            com.rupleide.netfix.core.debug.AppDebugManager.log("Запуск VPN ByeDPI")
             ServiceManager.start(context, Mode.VPN)
         }
 
@@ -303,7 +340,7 @@ fun MainTab(
                                 context.startActivity(intent)
                                 prefs.edit().putBoolean("tg_proxy_configured", true).apply()
                             } catch (e: Exception) {
-                                android.util.Log.e("MainTab", "Failed to open Telegram link", e)
+                                Log.e("MainTab", "Failed to open Telegram link", e)
                             }
                         }
                     },
@@ -311,7 +348,7 @@ fun MainTab(
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
                             isStarting = false
                         }
-                        android.util.Log.e("MainTab", "Failed to start TG proxy")
+                        Log.e("MainTab", "Failed to start TG proxy")
                     }
                 )
             } else {
@@ -329,6 +366,7 @@ fun MainTab(
     }
 
     fun stopAll() {
+        com.rupleide.netfix.core.debug.AppDebugManager.log("Остановка всех служб")
         isStarting = false
         context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
             .edit()
@@ -395,16 +433,24 @@ fun MainTab(
         }
     }
 
-    val auraBaseColor = when {
-        isRunning -> Color(0xFF22C55E)
-        isPending -> Color(0xFF3B82F6)
-        else -> Color(0xFF3B82F6)
-    }
-    val auraAlpha = when {
-        isRunning -> 0.28f
-        isPending -> 0.22f
-        else -> 0.13f
-    }
+    val auraBaseColor by animateColorAsState(
+        targetValue = when {
+            isRunning -> Color(0xFF22C55E)
+            isPending -> Color(0xFF3B82F6)
+            else -> Color(0xFF3B82F6)
+        },
+        animationSpec = tween(durationMillis = 1200, easing = CubicBezierEasing(0.4f, 0.0f, 0.2f, 1.0f)),
+        label = "auraColor"
+    )
+    val auraAlpha by animateFloatAsState(
+        targetValue = when {
+            isRunning -> 0.28f
+            isPending -> 0.22f
+            else -> 0.13f
+        },
+        animationSpec = tween(durationMillis = 1200, easing = CubicBezierEasing(0.4f, 0.0f, 0.2f, 1.0f)),
+        label = "auraAlpha"
+    )
 
     val performanceMode = performanceModeGlobal
 
@@ -847,7 +893,11 @@ fun MainTab(
                         .widthIn(max = 500.dp)
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
-                        .padding(start = 24.dp, end = 24.dp, top = 20.dp),
+                        .padding(start = 24.dp, end = 24.dp, top = 20.dp)
+                    .graphicsLayer {
+                        alpha = headerAlpha
+                        translationY = (1f - headerAlpha) * 22.dp.toPx()
+                    },
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Spacer(modifier = Modifier.height(12.dp))
@@ -899,9 +949,62 @@ fun MainTab(
                     }
                 }
 
+            val density = LocalDensity.current
+            val buttonSizePx = with(density) { buttonSize.toPx() }
+            Box(
+                modifier = Modifier
+                    .align(androidx.compose.ui.BiasAlignment(horizontalBias = 0f, verticalBias = -0.25f))
+                    .size(buttonSize),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!performanceMode) {
+                    Box(
+                        modifier = Modifier
+                            .size(buttonSize * 3.8f)
+                            .drawBehind {
+                                val cx = size.width / 2f
+                                val cy = size.height / 2f
+                                val orbitR = buttonSizePx * 0.2f
+                                val c1x = cx + kotlin.math.cos(auraAngle) * orbitR
+                                val c1y = cy + kotlin.math.sin(auraAngle) * orbitR
+                                val c2x = cx + kotlin.math.cos(auraSecond) * orbitR * 0.7f
+                                val c2y = cy + kotlin.math.sin(auraSecond) * orbitR * 0.7f
+                                val r = buttonSizePx * 1.3f * auraPulse
+                                drawCircle(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(
+                                            auraBaseColor.copy(alpha = auraAlpha * buttonAlpha),
+                                            Color.Transparent
+                                        ),
+                                        center = Offset(c1x, c1y),
+                                        radius = r
+                                    ),
+                                    center = Offset(c1x, c1y),
+                                    radius = r
+                                )
+                                drawCircle(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(
+                                            auraBaseColor.copy(alpha = auraAlpha * 0.6f * buttonAlpha),
+                                            Color.Transparent
+                                        ),
+                                        center = Offset(c2x, c2y),
+                                        radius = r * 0.75f
+                                    ),
+                                    center = Offset(c2x, c2y),
+                                    radius = r * 0.75f
+                                )
+                            }
+                    )
+                }
+
                 Box(
                     modifier = Modifier
-                        .align(androidx.compose.ui.BiasAlignment(horizontalBias = 0f, verticalBias = -0.25f))
+                        .graphicsLayer {
+                            alpha = buttonAlpha
+                            scaleX = buttonScale
+                            scaleY = buttonScale
+                        }
                 ) {
                     PowerButton(
                         buttonSize = buttonSize,
@@ -933,6 +1036,7 @@ fun MainTab(
                         noiseBrush = noiseBrush
                     )
                 }
+            }
 
                 Column(
                     modifier = Modifier
@@ -943,17 +1047,17 @@ fun MainTab(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF1E1E1E))
-                            .border(
-                                width = 1.dp,
-                                color = Color(0x1AFFFFFF),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            alpha = cardAlpha
+                            translationY = (1f - cardAlpha) * 30.dp.toPx()
+                        }
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1E1E1E))
+                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1063,10 +1167,15 @@ fun MainTab(
                         label = "ytContent"
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            alpha = quickButtonsAlpha
+                            translationY = (1f - quickButtonsAlpha) * 30.dp.toPx()
+                        },
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                         if (telegramProxyEnabledByUser) {
                             Box(
                                 modifier = Modifier
@@ -1208,593 +1317,153 @@ fun MainTab(
                 }
             }
         }
-        if (showUpdateDialog && updateInfo != null) {
-            val displayVersion = if (updateInfo.version.startsWith("v", ignoreCase = true)) updateInfo.version else "v${updateInfo.version}"
-            
-            val laterInteractionSource = remember { MutableInteractionSource() }
-            val laterPressed by laterInteractionSource.collectIsPressedAsState()
-            val laterHovered by laterInteractionSource.collectIsHoveredAsState()
-            val laterFocused by laterInteractionSource.collectIsFocusedAsState()
-            val laterHighlighted = laterPressed || laterHovered || laterFocused
-            
-            val laterBgColor by animateColorAsState(
-                targetValue = if (laterHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                animationSpec = tween(150),
-                label = "laterBg"
-            )
-            val laterBorderColor by animateColorAsState(
-                targetValue = if (laterHighlighted) Color(0xFFFFFFFF) else Color(0x1AFFFFFF),
-                animationSpec = tween(150),
-                label = "laterBorder"
-            )
-            val laterTextColor by animateColorAsState(
-                targetValue = if (laterHighlighted) Color.White else Color(0xFFA1A1AA),
-                animationSpec = tween(150),
-                label = "laterText"
-            )
-
-            val updateBtnInteractionSource = remember { MutableInteractionSource() }
-            val updateBtnPressed by updateBtnInteractionSource.collectIsPressedAsState()
-            val updateBtnHovered by updateBtnInteractionSource.collectIsHoveredAsState()
-            val updateBtnFocused by updateBtnInteractionSource.collectIsFocusedAsState()
-            val updateBtnHighlighted = updateBtnPressed || updateBtnHovered || updateBtnFocused
-            
-            val updateBgColor by animateColorAsState(
-                targetValue = if (updateBtnHighlighted) Color(0xFF5A9EFC) else Color(0xFF3B82F6),
-                animationSpec = tween(150),
-                label = "updateBg"
-            )
-            val updateBorderColor by animateColorAsState(
-                targetValue = if (updateBtnHighlighted) Color.White else Color(0x1AFFFFFF),
-                animationSpec = tween(150),
-                label = "updateBorder"
-            )
-            val updateTextColor by animateColorAsState(
-                targetValue = if (updateBtnHighlighted) Color.White else Color(0xFFF4F4F5),
-                animationSpec = tween(150),
-                label = "updateText"
-            )
-
-            androidx.compose.ui.window.Dialog(
-                onDismissRequest = { 
-                    if (!isDownloadingUpdate) {
-                        showUpdateDialog = false 
-                    }
-                }
-            ) {
-                Box(
-                    modifier = Modifier
-                        .widthIn(max = if (isLandscape) 500.dp else 320.dp)
-                        .fillMaxWidth()
-                        .heightIn(max = if (isLandscape) 280.dp else 450.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF1E1E1E))
-                        .border(
-                            width = 1.dp,
-                            color = Color(0x1AFFFFFF),
-                            shape = RoundedCornerShape(20.dp)
-                        )
-                        .padding(if (isLandscape) 16.dp else 24.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState()),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(if (isLandscape) 8.dp else 12.dp)
-                        ) {
-                            if (!isLandscape) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(56.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF3B82F6).copy(alpha = 0.15f))
-                                        .border(1.dp, Color(0xFF3B82F6).copy(alpha = 0.3f), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_bolt),
-                                        contentDescription = null,
-                                        tint = Color(0xFF3B82F6),
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                            }
-
-                            Text(
-                                text = "Найдено обновление",
-                                color = Color(0xFFF4F4F5),
-                                fontSize = if (isLandscape) 18.sp else 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
-                            )
-
-                            Text(
-                                text = "Версия $displayVersion",
-                                color = Color(0xFFF4F4F5),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.Center
-                            )
-
-                            if (isDownloadingUpdate) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = "Загрузка обновления...",
-                                        color = Color(0xFFA1A1AA),
-                                        fontSize = 14.sp,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    androidx.compose.material3.LinearProgressIndicator(
-                                        progress = { updateDownloadProgress },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(8.dp)
-                                            .clip(RoundedCornerShape(4.dp)),
-                                        color = Color(0xFF3B82F6),
-                                        trackColor = Color(0xFF2A2A2A)
-                                    )
-                                    Text(
-                                        text = "${(updateDownloadProgress * 100).toInt()}%",
-                                        color = Color(0xFFF4F4F5),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            } else {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Text(
-                                        text = "Доступна новая версия NetFix. Рекомендуем обновиться.",
-                                        color = Color(0xFFA1A1AA),
-                                        fontSize = 13.sp,
-                                        textAlign = TextAlign.Center,
-                                        lineHeight = 18.sp
-                                    )
-
-                                    if (updateInfo.description.isNotEmpty()) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .background(Color(0xFF161616), RoundedCornerShape(10.dp))
-                                                .border(1.dp, Color(0xFF242424), RoundedCornerShape(10.dp))
-                                                .padding(10.dp)
-                                        ) {
-                                            Text(
-                                                text = "Что нового:",
-                                                color = Color(0xFFF4F4F5),
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(bottom = 4.dp)
-                                            )
-                                            Text(
-                                                text = updateInfo.description,
-                                                color = Color(0xFFA1A1AA),
-                                                fontSize = 12.sp,
-                                                lineHeight = 16.sp
-                                            )
-                                        }
-                                    }
-                                }
-
-                                if (updateErrorMessage != null) {
-                                    Text(
-                                        text = "Ошибка: $updateErrorMessage",
-                                        color = Color(0xFFEF4444),
-                                        fontSize = 13.sp,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-
-                        if (!isDownloadingUpdate) {
-                            Spacer(modifier = Modifier.height(if (isLandscape) 8.dp else 16.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(laterBgColor)
-                                        .border(
-                                            width = 1.dp,
-                                            color = laterBorderColor,
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable(
-                                            interactionSource = laterInteractionSource,
-                                            indication = ripple()
-                                        ) {
-                                            showUpdateDialog = false
-                                        }
-                                        .padding(vertical = if (isLandscape) 10.dp else 14.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "Позже",
-                                        color = laterTextColor,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(updateBgColor)
-                                        .border(
-                                            width = 1.dp,
-                                            color = updateBorderColor,
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable(
-                                            interactionSource = updateBtnInteractionSource,
-                                            indication = ripple()
-                                        ) {
-                                            scope.launch {
-                                                isDownloadingUpdate = true
-                                                updateErrorMessage = null
-                                                com.rupleide.netfix.core.update.UpdateManager.downloadAndInstallApk(
-                                                    context = context,
-                                                    downloadUrl = updateInfo.downloadUrl,
-                                                    fileName = "update.apk",
-                                                    onProgress = { progress ->
-                                                        updateDownloadProgress = progress
-                                                    },
-                                                    onError = { err ->
-                                                        isDownloadingUpdate = false
-                                                        updateErrorMessage = err
-                                                    }
-                                                )
-                                                isDownloadingUpdate = false
-                                                showUpdateDialog = false
-                                            }
-                                        }
-                                        .padding(vertical = if (isLandscape) 10.dp else 14.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = if (updateErrorMessage != null) "Повторить" else "Обновить",
-                                        color = updateTextColor,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+        NetFixUpdateSheet(
+        visible = showUpdateDialog,
+        onDismissRequest = {
+            if (!isDownloadingUpdate) {
+                showUpdateDialog = false
+                com.rupleide.netfix.data.forceUpdateTestGlobal = false
             }
+        },
+        versionText = if (updateInfo != null) (if (updateInfo.version.startsWith("v", ignoreCase = true)) updateInfo.version else "v${updateInfo.version}") else "",
+        descriptionText = updateInfo?.description ?: "",
+        isDownloading = isDownloadingUpdate,
+        downloadProgress = updateDownloadProgress,
+        errorMessage = updateErrorMessage,
+        onUpdate = {
+            scope.launch {
+                isDownloadingUpdate = true
+                updateErrorMessage = null
+                com.rupleide.netfix.core.update.UpdateManager.downloadAndInstallApk(
+                    context = context,
+                    downloadUrl = updateInfo!!.downloadUrl,
+                    fileName = "update.apk",
+                    onProgress = { progress ->
+                        updateDownloadProgress = progress
+                    },
+                    onError = { err ->
+                        isDownloadingUpdate = false
+                        updateErrorMessage = err
+                    }
+                )
+                isDownloadingUpdate = false
+                showUpdateDialog = false
+                com.rupleide.netfix.data.forceUpdateTestGlobal = false
+            }
+        },
+        onLater = {
+            showUpdateDialog = false
+            com.rupleide.netfix.data.forceUpdateTestGlobal = false
         }
+    )
     }
 
-    if (showUnloadDialog) {
-        Dialog(onDismissRequest = { showUnloadDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = "Запуск в фоне и выход",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Выберите режим. Приложение запустит службу и закроется.",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
+    val unloadWantsYt = prefs.getBoolean("wants_youtube_bypass", true)
+    val unloadWantsTg = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
+    val unloadCurrentMode = when {
+        unloadWantsYt && unloadWantsTg -> "both"
+        unloadWantsTg -> "telegram"
+        unloadWantsYt -> "youtube"
+        else -> "both"
+    }
 
-                val wantsYt = prefs.getBoolean("wants_youtube_bypass", true)
-                val wantsTg = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                val currentMode = when {
-                    wantsYt && wantsTg -> "both"
-                    wantsTg -> "telegram"
-                    wantsYt -> "youtube"
-                    else -> "both"
+    NetFixUnloadSheet(
+        visible = showUnloadDialog,
+        onDismissRequest = { showUnloadDialog = false },
+        selectedKey = unloadCurrentMode,
+        options = listOf(
+            UnloadOption(key = "both", label = "Telegram и YouTube", subtitle = "Обход для мессенджера и стриминга"),
+            UnloadOption(key = "telegram", label = "Только Telegram", subtitle = "Только MTProto-прокси, без VPN"),
+            UnloadOption(key = "youtube", label = "Только YouTube", subtitle = "Только VPN-тоннель, без прокси")
+        ),
+        onOptionSelected = { key ->
+            showUnloadDialog = false
+            val edit = prefs.edit()
+            when (key) {
+                "both" -> {
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
                 }
+                "telegram" -> {
+                    edit.putBoolean("wants_youtube_bypass", false)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
+                }
+                "youtube" -> {
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", false)
+                }
+            }
+            edit.putBoolean("service_enabled", true)
+            edit.putBoolean("econom_mode", true)
+            edit.apply()
 
-                val options = listOf(
-                    "both" to "Telegram и YouTube",
-                    "telegram" to "Только Telegram",
-                    "youtube" to "Только YouTube"
-                )
+            ServiceManager.stop(context)
+            val stopIntent = Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                action = com.rupleide.netfix.data.STOP_ACTION
+            }
+            context.startService(stopIntent)
+            TgProxyController.stop()
+            com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
+            com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
 
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    options.forEach { (key, label) ->
-                        val isSelected = currentMode == key
-                        val rowInteraction = remember { MutableInteractionSource() }
-                        val rowPressed by rowInteraction.collectIsPressedAsState()
-                        val rowHovered by rowInteraction.collectIsHoveredAsState()
-                        val rowFocused by rowInteraction.collectIsFocusedAsState()
-                        val rowHighlighted = rowPressed || rowHovered || rowFocused
-                        val rowBg by animateColorAsState(
-                            targetValue = if (rowHighlighted) Color(0xFF38383A) else Color.Transparent,
-                            animationSpec = tween(150), label = ""
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(rowBg)
-                                .border(
-                                    width = if (rowHighlighted) 1.dp else 0.dp,
-                                    color = if (rowHighlighted) Color.White else Color.Transparent,
-                                    shape = RoundedCornerShape(8.dp)
+            scope.launch {
+                kotlinx.coroutines.delay(800)
+                val finalWantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
+                val finalWantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
+                if (finalWantsYoutube) {
+                    ServiceManager.start(context, Mode.VPN)
+                }
+                if (finalWantsTelegram) {
+                    val openTg = prefs.getBoolean("open_tg_on_connect", true)
+                    if (finalWantsYoutube) {
+                        TgProxyController.startAsync(
+                            context = context,
+                            onSuccess = {
+                                val port = TgProxyController.getPort(context)
+                                val secret = TgProxyController.getOrGenerateSecret(context)
+                                val url = TgProxyController.getTgProxyUrl(
+                                    TgProxyController.DEFAULT_BIND_IP, port, secret
                                 )
-                                .clickable(
-                                    interactionSource = rowInteraction,
-                                    indication = null
-                                ) {
-                                    showUnloadDialog = false
-                                    val edit = prefs.edit()
-                                    when (key) {
-                                        "both" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "telegram" -> {
-                                            edit.putBoolean("wants_youtube_bypass", false)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "youtube" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", false)
-                                        }
+                                val alreadyConfigured = prefs.getBoolean("tg_proxy_configured", false)
+                                if (openTg && !alreadyConfigured) {
+                                    val tgIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     }
-                                    edit.putBoolean("service_enabled", true)
-                                    edit.putBoolean("econom_mode", true)
-                                    edit.apply()
-
-                                    ServiceManager.stop(context)
-                                    val stopIntent = Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                        action = com.rupleide.netfix.data.STOP_ACTION
-                                    }
-                                    context.startService(stopIntent)
-                                    TgProxyController.stop()
-                                    com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                                    com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
-
-                                    scope.launch {
-                                        kotlinx.coroutines.delay(800)
-                                        val finalWantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
-                                        val finalWantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                                        if (finalWantsYoutube) {
-                                            ServiceManager.start(context, Mode.VPN)
-                                        }
-                                        if (finalWantsTelegram) {
-                                            val openTg = prefs.getBoolean("open_tg_on_connect", true)
-                                            if (finalWantsYoutube) {
-                                                TgProxyController.startAsync(
-                                                    context = context,
-                                                    onSuccess = {
-                                                        val port = TgProxyController.getPort(context)
-                                                        val secret = TgProxyController.getOrGenerateSecret(context)
-                                                        val url = TgProxyController.getTgProxyUrl(
-                                                            TgProxyController.DEFAULT_BIND_IP, port, secret
-                                                        )
-                                                        val alreadyConfigured = prefs.getBoolean("tg_proxy_configured", false)
-                                                        if (openTg && !alreadyConfigured) {
-                                                            val tgIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                            }
-                                                            try {
-                                                                context.startActivity(tgIntent)
-                                                                prefs.edit().putBoolean("tg_proxy_configured", true).apply()
-                                                            } catch (_: Exception) {}
-                                                        }
-                                                    },
-                                                    onError = {}
-                                                )
-                                            } else {
-                                                val startIntent = Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                                    action = com.rupleide.netfix.data.START_ACTION
-                                                    putExtra("open_tg", openTg)
-                                                }
-                                                androidx.core.content.ContextCompat.startForegroundService(context, startIntent)
-                                            }
-                                        }
-                                        val activity = context as? android.app.Activity
-                                        activity?.finishAndRemoveTask()
-                                    }
+                                    try {
+                                        context.startActivity(tgIntent)
+                                        prefs.edit().putBoolean("tg_proxy_configured", true).apply()
+                                    } catch (_: Exception) {}
                                 }
-                                .padding(vertical = 12.dp, horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = label,
-                                color = if (isSelected) Color(0xFF3B82F6) else Color(0xFFF4F4F5),
-                                fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.weight(1f).padding(end = 8.dp)
-                            )
-                            if (isSelected) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_bolt),
-                                    contentDescription = null,
-                                    tint = Color(0xFF3B82F6),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                            },
+                            onError = {}
+                        )
+                    } else {
+                        val startIntent = Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                            action = com.rupleide.netfix.data.START_ACTION
+                            putExtra("open_tg", openTg)
                         }
-                        HorizontalDivider(color = Color(0xFF242424))
+                        androidx.core.content.ContextCompat.startForegroundService(context, startIntent)
                     }
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val cancelInteraction = remember { MutableInteractionSource() }
-                val cancelPressed by cancelInteraction.collectIsPressedAsState()
-                val cancelHovered by cancelInteraction.collectIsHoveredAsState()
-                val cancelFocused by cancelInteraction.collectIsFocusedAsState()
-                val cancelHighlighted = cancelPressed || cancelHovered || cancelFocused
-                val cancelBg by animateColorAsState(
-                    targetValue = if (cancelHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                    animationSpec = tween(150), label = ""
-                )
-                val cancelBorder by animateColorAsState(
-                    targetValue = if (cancelHighlighted) Color.White else Color(0x1AFFFFFF),
-                    animationSpec = tween(150), label = ""
-                )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(cancelBg)
-                        .border(1.dp, cancelBorder, RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = cancelInteraction,
-                            indication = null
-                        ) { showUnloadDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                }
+                val activity = context as? android.app.Activity
+                activity?.finishAndRemoveTask()
             }
         }
-    }
+    )
 
-    if (showHintDialog) {
-        Dialog(onDismissRequest = { showHintDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = "Запуск в фоне",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Вы можете зажать главную кнопку (долгое нажатие), чтобы запустить обход в фоне и сразу закрыть приложение для экономии оперативной памяти.",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 14.sp
-                )
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    val bgInteraction = remember { MutableInteractionSource() }
-                    val bgPressed by bgInteraction.collectIsPressedAsState()
-                    val bgHovered by bgInteraction.collectIsHoveredAsState()
-                    val bgFocused by bgInteraction.collectIsFocusedAsState()
-                    val bgHighlighted = bgPressed || bgHovered || bgFocused
-                    val bgBg by animateColorAsState(
-                        targetValue = if (bgHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                        animationSpec = tween(150), label = ""
-                    )
-                    val bgBorder by animateColorAsState(
-                        targetValue = if (bgHighlighted) Color.White else Color(0x1AFFFFFF),
-                        animationSpec = tween(150), label = ""
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(bgBg)
-                            .border(1.dp, bgBorder, RoundedCornerShape(10.dp))
-                            .clickable(
-                                interactionSource = bgInteraction,
-                                indication = null
-                            ) {
-                                showHintDialog = false
-                                showUnloadDialog = true
-                            }
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Запустить в фоне",
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
-                    }
-
-                    val runInteraction = remember { MutableInteractionSource() }
-                    val runPressed by runInteraction.collectIsPressedAsState()
-                    val runHovered by runInteraction.collectIsHoveredAsState()
-                    val runFocused by runInteraction.collectIsFocusedAsState()
-                    val runHighlighted = runPressed || runHovered || runFocused
-                    val runBg by animateColorAsState(
-                        targetValue = if (runHighlighted) Color(0xFF5A9EFC) else Color(0xFF3B82F6),
-                        animationSpec = tween(150), label = ""
-                    )
-                    val runBorder by animateColorAsState(
-                        targetValue = if (runHighlighted) Color.White else Color(0x1AFFFFFF),
-                        animationSpec = tween(150), label = ""
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(runBg)
-                            .border(1.dp, runBorder, RoundedCornerShape(10.dp))
-                            .clickable(
-                                interactionSource = runInteraction,
-                                indication = null
-                            ) {
-                                showHintDialog = false
-                                handleNormalStart()
-                            }
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Обычный запуск",
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
+    NetFixHintSheet(
+        visible = showHintDialog,
+        onDismissRequest = { showHintDialog = false },
+        onRunInBackground = {
+            showHintDialog = false
+            showUnloadDialog = true
+        },
+        onNormalStart = {
+            showHintDialog = false
+            handleNormalStart()
         }
-    }
+    )
 }
-
 
 fun formatTimer(seconds: Int): String {
     val h = seconds / 3600
@@ -1834,11 +1503,15 @@ fun PowerButton(
 
     val buttonScale by animateFloatAsState(targetValue = if (!performanceMode && mainPressed) 0.94f else 1f, label = "")
 
-    val statusColor = when {
-        isRunning -> Color(0xFF22C55E)
-        isPending -> Color(0xFF3B82F6)
-        else -> Color(0xFF7C6AF7)
-    }
+    val statusColor by animateColorAsState(
+        targetValue = when {
+            isRunning -> Color(0xFF22C55E)
+            isPending -> Color(0xFF3B82F6)
+            else -> Color(0xFF7C6AF7)
+        },
+        animationSpec = tween(durationMillis = 800, easing = CubicBezierEasing(0.4f, 0.0f, 0.2f, 1.0f)),
+        label = "statusColor"
+    )
 
     val borderHighlightColor by animateColorAsState(
         targetValue = if (mainHighlighted) Color.White else statusColor,
@@ -1851,53 +1524,27 @@ fun PowerButton(
     Box(
         modifier = Modifier
             .size(buttonSize)
-            .then(
-                if (!performanceMode) Modifier.drawBehind {
-                    val cx = size.width / 2f
-                    val cy = size.height / 2f
-                    val orbitR = size.minDimension * 0.2f
-                    val c1x = cx + kotlin.math.cos(auraAngle) * orbitR
-                    val c1y = cy + kotlin.math.sin(auraAngle) * orbitR
-                    val c2x = cx + kotlin.math.cos(auraSecond) * orbitR * 0.7f
-                    val c2y = cy + kotlin.math.sin(auraSecond) * orbitR * 0.7f
-                    val r = size.minDimension * 1.3f * auraPulse
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                auraBaseColor.copy(alpha = auraAlpha),
-                                Color.Transparent
-                            ),
-                            center = Offset(c1x, c1y),
-                            radius = r
-                        ),
-                        center = Offset(c1x, c1y),
-                        radius = r
-                    )
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                auraBaseColor.copy(alpha = auraAlpha * 0.6f),
-                                Color.Transparent
-                            ),
-                            center = Offset(c2x, c2y),
-                            radius = r * 0.75f
-                        ),
-                        center = Offset(c2x, c2y),
-                        radius = r * 0.75f
-                    )
-                } else Modifier
-            )
             .graphicsLayer(
                 scaleX = buttonScale,
                 scaleY = buttonScale
             )
-            .shadow(
-                elevation = if (!performanceMode && isAnimating) 32.dp else if (!performanceMode) 8.dp else 0.dp,
-                shape = CircleShape,
-                clip = false,
-                ambientColor = statusColor,
-                spotColor = statusColor
-            )
+            .drawBehind {
+                if (!performanceMode) {
+                    val shadowRadius = size.width / 2f + 16.dp.toPx()
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                statusColor.copy(alpha = 0.4f),
+                                Color.Transparent
+                            ),
+                            center = center,
+                            radius = shadowRadius
+                        ),
+                        radius = shadowRadius,
+                        center = center
+                    )
+                }
+            }
             .focusRequester(focusRequester)
             .focusProperties { down = navBarFocusRequester }
             .border(width = 2.5.dp, color = borderHighlightColor, shape = CircleShape)

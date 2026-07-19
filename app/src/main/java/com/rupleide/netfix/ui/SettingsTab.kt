@@ -5,6 +5,16 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import com.rupleide.netfix.ui.components.NetFixSwitch
+import com.rupleide.netfix.ui.components.NetFixTextField
+import com.rupleide.netfix.ui.components.NetFixActionSheet
+import com.rupleide.netfix.ui.components.NetFixLogsSheet
+import com.rupleide.netfix.ui.components.NetFixDnsSheet
+import com.rupleide.netfix.ui.components.NetFixAppsSheet
+import com.rupleide.netfix.ui.components.NetFixResetSheet
+import com.rupleide.netfix.ui.components.ResetAction
+import com.rupleide.netfix.ui.components.NetFixUnloadSheet
+import com.rupleide.netfix.ui.components.UnloadOption
+import com.rupleide.netfix.ui.components.NetFixSheetOption
 import com.rupleide.netfix.R
 import androidx.compose.material3.Icon
 import androidx.compose.ui.res.painterResource
@@ -16,6 +26,7 @@ import androidx.compose.material.icons.filled.AppBlocking
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -264,7 +275,7 @@ fun SettingsActionButton(
         Text(
             text = label,
             color = currentTextColor,
-            fontWeight = FontWeight.Medium,
+            fontWeight = FontWeight.SemiBold,
             fontSize = 13.sp
         )
     }
@@ -324,8 +335,15 @@ fun SettingsTab(
             sharedPrefs.getBoolean("performance_mode", false)
         )
     }
+    var showDebugMenuDialog by remember { mutableStateOf(false) }
     var showBypassModeDialog by remember { mutableStateOf(false) }
+    var showDnsDialog by remember { mutableStateOf(false) }
+    var showExcludedAppsDialog by remember { mutableStateOf(false) }
+    var showResetDialog by remember { mutableStateOf(false) }
     var showUnloadDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(showBypassModeDialog, showDebugMenuDialog, showDnsDialog, showExcludedAppsDialog, showResetDialog, showUnloadDialog) {
+        com.rupleide.netfix.data.isActionSheetVisibleGlobal = showBypassModeDialog || showDebugMenuDialog || showDnsDialog || showExcludedAppsDialog || showResetDialog || showUnloadDialog
+    }
     var bypassMode by remember {
         val wantsYt = sharedPrefs.getBoolean("wants_youtube_bypass", true)
         val wantsTg = sharedPrefs.getBoolean("telegram_proxy_enabled_by_user", true)
@@ -337,8 +355,6 @@ fun SettingsTab(
         }
         mutableStateOf(initialValue)
     }
-    var showDnsDialog by remember { mutableStateOf(false) }
-    var showResetDialog by remember { mutableStateOf(false) }
     var selectedDnsPreset by remember { mutableStateOf("Стандартный (Отключено)") }
     var privateDnsMode by remember { mutableStateOf("") }
 
@@ -382,7 +398,6 @@ fun SettingsTab(
         }
     }
 
-    var showExcludedAppsDialog by remember { mutableStateOf(false) }
     var selectedApps by remember {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
         val saved = prefs.getStringSet("selected_apps", null)
@@ -411,6 +426,14 @@ fun SettingsTab(
         mutableStateOf(initial)
     }
     var installedApps by remember { mutableStateOf<List<PackageInfo>>(emptyList()) }
+    val actualSelectedCount = remember(selectedApps, installedApps) {
+        if (installedApps.isEmpty()) {
+            selectedApps.size
+        } else {
+            val installedSet = installedApps.map { pkg -> pkg.packageName }.toSet()
+            selectedApps.count { name -> name in installedSet }
+        }
+    }
 
     LaunchedEffect(Unit) {
         installedApps = withContext(Dispatchers.IO) {
@@ -418,7 +441,10 @@ fun SettingsTab(
             pm.getInstalledPackages(PackageManager.GET_META_DATA)
                 .filter { pkg ->
                     val flags = pkg.applicationInfo?.flags ?: 0
-                    (flags and ApplicationInfo.FLAG_SYSTEM) == 0
+                    val isSystem = (flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isUpdatedSystem = (flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                    val hasLaunchIntent = pm.getLaunchIntentForPackage(pkg.packageName) != null
+                    !isSystem || isUpdatedSystem || hasLaunchIntent
                 }
                 .sortedBy { pkg ->
                     pkg.applicationInfo?.let {
@@ -441,7 +467,7 @@ fun SettingsTab(
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = navOverlayReserve + 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Column(
@@ -585,7 +611,7 @@ fun SettingsTab(
                     actionContent = {
                         SettingsActionButton(
                             label = "Сбросить",
-                            onClick = {
+                            onClick = { com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен сброс онбординга с перезапуском приложения")
                                 context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
                                     .edit()
                                     .putBoolean("onboarding_completed", false)
@@ -599,7 +625,7 @@ fun SettingsTab(
                             }
                         )
                     },
-                    onClick = {
+                    onClick = { com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен сброс онбординга с перезапуском приложения")
                         context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
                             .edit()
                             .putBoolean("onboarding_completed", false)
@@ -727,17 +753,23 @@ fun SettingsTab(
 
                 SettingsClickRow(
                     title = "Включить VPN для...",
-                    subtitle = if (selectedApps.isNotEmpty())
-                        "Выбрано: ${selectedApps.size} прил. (только они пойдут через VPN)"
+                    subtitle = if (actualSelectedCount > 0)
+                        "Выбрано: $actualSelectedCount прил. (только они пойдут через VPN)"
                     else
                         "Выберите приложения для обхода блокировок",
                     actionContent = {
                         SettingsActionButton(
                             label = "Настроить",
-                            onClick = { showExcludedAppsDialog = true }
+                            onClick = {
+                                com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог выбора приложений для обхода")
+                                showExcludedAppsDialog = true
+                            }
                         )
                     },
-                    onClick = { showExcludedAppsDialog = true }
+                    onClick = {
+                        com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог выбора приложений для обхода")
+                        showExcludedAppsDialog = true
+                    }
                 )
             }
 
@@ -833,10 +865,16 @@ fun SettingsTab(
                     actionContent = {
                         SettingsActionButton(
                             label = "Настроить",
-                            onClick = { showDnsDialog = true }
+                            onClick = {
+                                com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог выбора DNS-серверов")
+                                showDnsDialog = true
+                            }
                         )
                     },
-                    onClick = { showDnsDialog = true }
+                    onClick = {
+                        com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог выбора DNS-серверов")
+                        showDnsDialog = true
+                    }
                 )
 
                 val isPrivateDnsBlocking = privateDnsMode == "opportunistic" || privateDnsMode == "hostname"
@@ -887,6 +925,59 @@ fun SettingsTab(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                 }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BugReport,
+                        contentDescription = null,
+                        tint = Color(0xFFF4F4F5),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Отладка",
+                        color = Color(0xFFF4F4F5),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+
+                var debugEnabled by remember { mutableStateOf(com.rupleide.netfix.core.debug.AppDebugManager.isLoggingEnabled()) }
+
+                SettingsSwitchRow(
+                    title = "Запись логов",
+                    subtitle = "Записывать историю действий в память для отладки",
+                    checked = debugEnabled,
+                    onCheckedChange = { checked ->
+                        debugEnabled = checked
+                        com.rupleide.netfix.core.debug.AppDebugManager.setEnabled(context, checked)
+                    }
+                )
+
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+
+                SettingsClickRow(
+                    title = "Просмотр логов",
+                    subtitle = "Открыть историю событий и логов приложения",
+                    actionContent = {
+                        SettingsActionButton(
+                            label = "Открыть",
+                            onClick = { showDebugMenuDialog = true }
+                        )
+                    },
+                    onClick = { showDebugMenuDialog = true }
+                )
             }
 
             Column(
@@ -960,857 +1051,350 @@ fun SettingsTab(
                     actionContent = {
                         SettingsActionButton(
                             label = "Сбросить",
-                            onClick = { showResetDialog = true }
+                            onClick = {
+                                com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог сброса приложения")
+                                showResetDialog = true
+                            }
                         )
                     },
                     modifier = Modifier.focusProperties { down = navBarFocusRequester },
-                    onClick = { showResetDialog = true }
+                    onClick = {
+                        com.rupleide.netfix.core.debug.AppDebugManager.log("Открыт диалог сброса приложения")
+                        showResetDialog = true
+                    }
                 )
             }
 
-            Spacer(modifier = Modifier.height(navOverlayReserve))
         }
     }
 
-    if (showExcludedAppsDialog) {
-        Dialog(onDismissRequest = { showExcludedAppsDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
+    NetFixAppsSheet(
+        visible = showExcludedAppsDialog,
+        onDismissRequest = { showExcludedAppsDialog = false },
+        icon = R.drawable.ic_settings,
+        title = "Включить VPN для...",
+        subtitle = "Только выбранные приложения будут направляться в обход через VPN. Остальные пойдут напрямую.",
+        installedApps = installedApps,
+        selectedApps = selectedApps,
+        onAppToggled = { pkg ->
+            val newSet = selectedApps.toMutableSet()
+            if (newSet.contains(pkg)) newSet.remove(pkg) else newSet.add(pkg)
+            selectedApps = newSet
+            context.getSharedPreferences(
+                context.packageName + "_preferences",
+                android.content.Context.MODE_PRIVATE
+            ).edit().putStringSet("selected_apps", newSet).apply()
+        }
+    )
+
+    val systemInfo = remember(showDebugMenuDialog) { com.rupleide.netfix.core.debug.AppDebugManager.generateSystemInfoDump(context) }
+    val logsList = remember(showDebugMenuDialog) { com.rupleide.netfix.core.debug.AppDebugManager.getLogs() }
+    val clipboardManager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+
+    NetFixLogsSheet(
+        visible = showDebugMenuDialog,
+        onDismissRequest = { showDebugMenuDialog = false },
+        icon = R.drawable.ic_info,
+        title = "Логи отладки",
+        subtitle = "История последних действий приложения (хранится временно в оперативной памяти):",
+        systemInfo = systemInfo,
+        logsList = logsList,
+        onCopy = {
+            val text = systemInfo + "\n" + logsList.joinToString("\n")
+            val clip = android.content.ClipData.newPlainText("NetFix Logs", text)
+            clipboardManager.setPrimaryClip(clip)
+            android.widget.Toast.makeText(context, "Логи скопированы", android.widget.Toast.LENGTH_SHORT).show()
+        },
+        onClear = {
+            com.rupleide.netfix.core.debug.AppDebugManager.clear()
+            showDebugMenuDialog = false
+            android.widget.Toast.makeText(context, "Логи очищены", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    )
+
+    val dnsList = listOf(
+        "Стандартный (Отключено)",
+        "Cloudflare Secure DNS",
+        "Google Public DNS",
+        "AdGuard DNS (Блокировка рекламы)",
+        "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)",
+        "Supercell Xbox DNS (supercell.xbox-dns.ru)",
+        "NullsProxy DNS (dns.nullsproxy.com)",
+        "Comss.one DNS (dns.comss.one)",
+        "Geohide DNS (dns.geohide.ru)"
+    )
+
+    NetFixDnsSheet(
+        visible = showDnsDialog,
+        onDismissRequest = { showDnsDialog = false },
+        icon = R.drawable.ic_settings,
+        title = "Маршрутизация DNS",
+        subtitle = "Выберите пресет DNS для обхода ограничений",
+        dnsList = dnsList,
+        selectedDnsPreset = selectedDnsPreset,
+        onPresetSelected = { preset ->
+            selectedDnsPreset = preset
+            context.getSharedPreferences(
+                context.packageName + "_preferences",
+                android.content.Context.MODE_PRIVATE
+            ).edit().putString("custom_dns_preset", preset).apply()
+            showDnsDialog = false
+
+            val hostname = when (preset) {
+                "Cloudflare Secure DNS" -> "one.one.one.one"
+                "Google Public DNS" -> "dns.google"
+                "AdGuard DNS (Блокировка рекламы)" -> "dns.adguard-dns.com"
+                "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)" -> "dot.xbox-dns.ru"
+                "Supercell Xbox DNS (supercell.xbox-dns.ru)" -> "dot.xbox-dns.ru"
+                "NullsProxy DNS (dns.nullsproxy.com)" -> "dns.nullsproxy.com"
+                "Comss.one DNS (dns.comss.one)" -> "dns.comss.one"
+                "Geohide DNS (dns.geohide.ru)" -> "dns.geohide.ru"
+                else -> null
+            }
+
+            if (hostname != null) {
+                try {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("Private DNS", hostname)
+                    clipboard.setPrimaryClip(clip)
+                    android.widget.Toast.makeText(context, "Адрес скопирован: $hostname", android.widget.Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {}
+            }
+
+            try {
+                val intent = android.content.Intent("android.settings.PRIVATE_DNS_SETTINGS")
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                try {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+                    context.startActivity(intent)
+                } catch (_: Exception) {}
+            }
+        }
+    )
+
+        NetFixActionSheet(
+        visible = showBypassModeDialog,
+        onDismissRequest = { showBypassModeDialog = false },
+        icon = R.drawable.ic_bolt,
+        title = "Режим работы",
+        subtitle = "Выберите, какие именно сервисы должен обходить NetFix.",
+        options = listOf(
+            NetFixSheetOption(
+                label = "Telegram и YouTube",
+                selected = bypassMode == "both",
+                onClick = {
+                    bypassMode = "both"
+                    val edit = sharedPrefs.edit()
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
+                    edit.putBoolean("service_enabled", false).apply()
+                    ServiceManager.stop(context)
+                    val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                        action = com.rupleide.netfix.data.STOP_ACTION
+                    }
+                    context.startService(stopIntent)
+                    TgProxyController.stop()
+                }
+            ),
+            NetFixSheetOption(
+                label = "Только Telegram",
+                selected = bypassMode == "telegram",
+                onClick = {
+                    bypassMode = "telegram"
+                    val edit = sharedPrefs.edit()
+                    edit.putBoolean("wants_youtube_bypass", false)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
+                    edit.putBoolean("service_enabled", false).apply()
+                    ServiceManager.stop(context)
+                    val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                        action = com.rupleide.netfix.data.STOP_ACTION
+                    }
+                    context.startService(stopIntent)
+                    TgProxyController.stop()
+                }
+            ),
+            NetFixSheetOption(
+                label = "Только YouTube",
+                selected = bypassMode == "youtube",
+                onClick = {
+                    bypassMode = "youtube"
+                    val edit = sharedPrefs.edit()
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", false)
+                    edit.putBoolean("service_enabled", false).apply()
+                    ServiceManager.stop(context)
+                    val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                        action = com.rupleide.netfix.data.STOP_ACTION
+                    }
+                    context.startService(stopIntent)
+                    TgProxyController.stop()
+                }
+            )
+        )
+    )
+
+    NetFixResetSheet(
+        visible = showResetDialog,
+        onDismissRequest = { showResetDialog = false },
+        actions = listOf(
+            ResetAction(
+                label = "Сбросить всё",
+                subtitle = "Полный сброс настроек с перезапуском"
             ) {
-                Text(
-                    text = "Включить VPN для...",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Только выбранные приложения будут направляться в обход через VPN. Остальные пойдут напрямую.",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
+                com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
+                val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                    action = com.rupleide.netfix.data.STOP_ACTION
+                    com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен полный сброс настроек приложения (Сбросить всё) с перезапуском")
+                }
+                context.startService(stopIntent)
+                com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
+                com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
+                com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
+                val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
+                prefs.edit().clear().commit()
+                val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
+                hintPrefs.edit().clear().commit()
+                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                context.startActivity(intent)
+                java.lang.System.exit(0)
+            },
+            ResetAction(
+                label = "Сбросить всё, кроме результатов тестов",
+                subtitle = "Настройки удаляются, результаты тестов сохраняются"
+            ) {
+                com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
+                val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                    action = com.rupleide.netfix.data.STOP_ACTION
+                    com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен частичный сброс настроек (сохранены результаты тестов) с перезапуском")
+                }
+                context.startService(stopIntent)
+                com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
+                com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
+                com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
+                val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
+                val isSetupComplete = prefs.getBoolean("wizard_is_setup_complete", false)
+                val isSetupCompleteOld = prefs.getBoolean("is_setup_complete", false)
+                val currentTestIndex = prefs.getInt("wizard_current_test_index", 0)
+                val currentTestIndexOld = prefs.getInt("current_test_index", 0)
+                val savedSelectedApps = prefs.getStringSet("selected_apps", null)
+                prefs.edit().clear().commit()
+                val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
+                hintPrefs.edit().clear().commit()
+                val edit = prefs.edit()
+                edit.putBoolean("wizard_is_setup_complete", isSetupComplete)
+                edit.putBoolean("is_setup_complete", isSetupCompleteOld)
+                edit.putInt("wizard_current_test_index", currentTestIndex)
+                edit.putInt("current_test_index", currentTestIndexOld)
+                if (savedSelectedApps != null) {
+                    edit.putStringSet("selected_apps", savedSelectedApps)
+                }
+                edit.commit()
+                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                context.startActivity(intent)
+                java.lang.System.exit(0)
+            }
+        )
+    )
 
-                if (installedApps.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(100.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Загрузка...",
-                            color = Color(0xFFA1A1AA),
-                            fontSize = 14.sp
-                        )
-                    }
-                } else {
-                    var searchQuery by remember { mutableStateOf("") }
-                    val initialSelectedApps = remember(showExcludedAppsDialog) { selectedApps.toSet() }
-                    val filteredApps = remember(searchQuery, installedApps) {
-                        val baseList = if (searchQuery.isBlank()) installedApps
-                        else installedApps.filter { pkg ->
-                            val name = pkg.applicationInfo?.let {
-                                context.packageManager.getApplicationLabel(it).toString()
-                            } ?: pkg.packageName
-                            name.contains(searchQuery, ignoreCase = true) ||
-                                pkg.packageName.contains(searchQuery, ignoreCase = true)
-                        }
-                        baseList.sortedWith(compareByDescending<PackageInfo> { pkg ->
-                            initialSelectedApps.contains(pkg.packageName)
-                        }.thenBy { pkg ->
-                            pkg.applicationInfo?.let {
-                                context.packageManager.getApplicationLabel(it).toString()
-                            } ?: pkg.packageName
-                        })
-                    }
+    val unloadWantsYt = sharedPrefs.getBoolean("wants_youtube_bypass", true)
+    val unloadWantsTg = sharedPrefs.getBoolean("telegram_proxy_enabled_by_user", true)
+    val unloadCurrentMode = when {
+        unloadWantsYt && unloadWantsTg -> "both"
+        unloadWantsTg -> "telegram"
+        unloadWantsYt -> "youtube"
+        else -> "both"
+    }
 
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = {
-                            Text(
-                                text = "Поиск приложений...",
-                                color = Color(0xFF555555),
-                                fontSize = 13.sp
-                            )
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color(0xFF333333),
-                            cursorColor = Color(0xFF3B82F6),
-                            focusedTextColor = Color(0xFFF4F4F5),
-                            unfocusedTextColor = Color(0xFFF4F4F5)
-                        ),
-                        shape = RoundedCornerShape(10.dp)
-                    )
+    NetFixUnloadSheet(
+        visible = showUnloadDialog,
+        onDismissRequest = { showUnloadDialog = false },
+        selectedKey = unloadCurrentMode,
+        options = listOf(
+            UnloadOption(key = "both", label = "Telegram и YouTube", subtitle = "Обход для мессенджера и стриминга"),
+            UnloadOption(key = "telegram", label = "Только Telegram", subtitle = "Только MTProto-прокси, без VPN"),
+            UnloadOption(key = "youtube", label = "Только YouTube", subtitle = "Только VPN-тоннель, без прокси")
+        ),
+        onOptionSelected = { key ->
+            showUnloadDialog = false
+            val edit = sharedPrefs.edit()
+            when (key) {
+                "both" -> {
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
+                }
+                "telegram" -> {
+                    edit.putBoolean("wants_youtube_bypass", false)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", true)
+                }
+                "youtube" -> {
+                    edit.putBoolean("wants_youtube_bypass", true)
+                    edit.putBoolean("telegram_proxy_enabled_by_user", false)
+                }
+            }
+            edit.putBoolean("service_enabled", true)
+            edit.putBoolean("econom_mode", true)
+            edit.apply()
 
-                    Spacer(modifier = Modifier.height(8.dp))
+            ServiceManager.stop(context)
+            val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                action = com.rupleide.netfix.data.STOP_ACTION
+            }
+            context.startService(stopIntent)
+            TgProxyController.stop()
 
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 340.dp)
-                    ) {
-                        items(filteredApps) { packageInfo ->
-                            val pkg = packageInfo.packageName
-                            val appName = packageInfo.applicationInfo?.let {
-                                context.packageManager.getApplicationLabel(it).toString()
-                            } ?: pkg
-                            val isChecked = selectedApps.contains(pkg)
+            com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
+            com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
 
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) {
-                                        val newSet = selectedApps.toMutableSet()
-                                        if (isChecked) newSet.remove(pkg) else newSet.add(pkg)
-                                        selectedApps = newSet
-                                        context.getSharedPreferences(
-                                            context.packageName + "_preferences",
-                                            android.content.Context.MODE_PRIVATE
-                                        ).edit().putStringSet("selected_apps", newSet).apply()
-                                    }
-                                    .padding(vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(end = 8.dp)
-                                ) {
-                                    Text(
-                                        text = appName,
-                                        color = Color(0xFFF4F4F5),
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = pkg,
-                                        color = Color(0xFFA1A1AA),
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                Checkbox(
-                                    checked = isChecked,
-                                    onCheckedChange = null,
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = Color(0xFF3B82F6),
-                                        uncheckedColor = Color(0xFF3A3A3A),
-                                        checkmarkColor = Color.White
-                                    )
+            scope.launch {
+                kotlinx.coroutines.delay(800)
+                val wantsYoutube = sharedPrefs.getBoolean("wants_youtube_bypass", true)
+                val wantsTelegram = sharedPrefs.getBoolean("telegram_proxy_enabled_by_user", true)
+
+                if (wantsYoutube) {
+                    ServiceManager.start(context, Mode.VPN)
+                }
+
+                if (wantsTelegram) {
+                    val openTg = sharedPrefs.getBoolean("open_tg_on_connect", true)
+                    if (wantsYoutube) {
+                        TgProxyController.startAsync(
+                            context = context,
+                            onSuccess = {
+                                val port = TgProxyController.getPort(context)
+                                val secret = TgProxyController.getOrGenerateSecret(context)
+                                val url = TgProxyController.getTgProxyUrl(
+                                    TgProxyController.DEFAULT_BIND_IP,
+                                    port,
+                                    secret
                                 )
-                            }
-                            HorizontalDivider(color = Color(0xFF242424))
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF3B82F6))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { showExcludedAppsDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Готово",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                }
-            }
-        }
-    }
-
-    if (showDnsDialog) {
-        Dialog(onDismissRequest = { showDnsDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = "Маршрутизация DNS",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Выберите пресет DNS для обхода ограничений",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val dnsList = listOf(
-                    "Стандартный (Отключено)",
-                    "Cloudflare Secure DNS",
-                    "Google Public DNS",
-                    "AdGuard DNS (Блокировка рекламы)",
-                    "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)",
-                    "Supercell Xbox DNS (supercell.xbox-dns.ru)",
-                    "NullsProxy DNS (dns.nullsproxy.com)",
-                    "Comss.one DNS (dns.comss.one)",
-                    "Geohide DNS (dns.geohide.ru)"
-                )
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 340.dp)
-                ) {
-                    items(dnsList) { preset ->
-                        val isSelected = selectedDnsPreset == preset
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isPressed by interactionSource.collectIsPressedAsState()
-                        val isHovered by interactionSource.collectIsHoveredAsState()
-                        val isFocused by interactionSource.collectIsFocusedAsState()
-                        val isHighlighted = isPressed || isHovered || isFocused
-
-                        val itemBgColor by animateColorAsState(
-                            targetValue = if (isHighlighted) Color(0x1AFFFFFF) else Color.Transparent,
-                            animationSpec = tween(150),
-                            label = "dnsItemBg"
-                        )
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(itemBgColor)
-                                .clickable(
-                                    interactionSource = interactionSource,
-                                    indication = null
-                                ) {
-                                    selectedDnsPreset = preset
-                                    context.getSharedPreferences(
-                                        context.packageName + "_preferences",
-                                        android.content.Context.MODE_PRIVATE
-                                    ).edit().putString("custom_dns_preset", preset).apply()
-                                    showDnsDialog = false
-
-                                    val hostname = when (preset) {
-                                        "Cloudflare Secure DNS" -> "one.one.one.one"
-                                        "Google Public DNS" -> "dns.google"
-                                        "AdGuard DNS (Блокировка рекламы)" -> "dns.adguard-dns.com"
-                                        "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)" -> "dot.xbox-dns.ru"
-                                        "Supercell Xbox DNS (supercell.xbox-dns.ru)" -> "dot.xbox-dns.ru"
-                                        "NullsProxy DNS (dns.nullsproxy.com)" -> "dns.nullsproxy.com"
-                                        "Comss.one DNS (dns.comss.one)" -> "dns.comss.one"
-                                        "Geohide DNS (dns.geohide.ru)" -> "dns.geohide.ru"
-                                        else -> null
+                                val alreadyConfigured = sharedPrefs.getBoolean("tg_proxy_configured", false)
+                                if (openTg && !alreadyConfigured) {
+                                    val tgIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                                     }
-
-                                    if (hostname != null) {
-                                        try {
-                                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                            val clip = android.content.ClipData.newPlainText("Private DNS", hostname)
-                                            clipboard.setPrimaryClip(clip)
-                                            android.widget.Toast.makeText(context, "Адрес скопирован: $hostname", android.widget.Toast.LENGTH_LONG).show()
-                                        } catch (_: Exception) {}
-                                    }
-
                                     try {
-                                        val intent = android.content.Intent("android.settings.PRIVATE_DNS_SETTINGS")
-                                        context.startActivity(intent)
-                                    } catch (_: Exception) {
-                                        try {
-                                            val intent = android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
-                                            context.startActivity(intent)
-                                        } catch (_: Exception) {}
-                                    }
+                                        context.startActivity(tgIntent)
+                                        sharedPrefs.edit().putBoolean("tg_proxy_configured", true).apply()
+                                    } catch (_: Exception) {}
                                 }
-                                .padding(vertical = 12.dp, horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = preset,
-                                color = if (isSelected) Color(0xFF3B82F6) else Color(0xFFF4F4F5),
-                                fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.weight(1f).padding(end = 8.dp)
-                            )
-                            if (isSelected) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_bolt),
-                                    contentDescription = null,
-                                    tint = Color(0xFF3B82F6),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                        HorizontalDivider(color = Color(0xFF242424))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF242426))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { showDnsDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                }
-            }
-        }
-    }
-
-    if (showBypassModeDialog) {
-        Dialog(onDismissRequest = { showBypassModeDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = "Режим работы",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Выберите, какие сервисы обходить",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val modes = listOf(
-                    "both" to "Telegram и YouTube",
-                    "telegram" to "Только Telegram",
-                    "youtube" to "Только YouTube"
-                )
-
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(modes) { item ->
-                        val modeKey = item.first
-                        val modeLabel = item.second
-                        val isSelected = bypassMode == modeKey
-
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isPressed by interactionSource.collectIsPressedAsState()
-                        val isHovered by interactionSource.collectIsHoveredAsState()
-                        val isFocused by interactionSource.collectIsFocusedAsState()
-                        val isHighlighted = isPressed || isHovered || isFocused
-
-                        val itemBgColor by animateColorAsState(
-                            targetValue = if (isHighlighted) Color(0x1AFFFFFF) else Color.Transparent,
-                            animationSpec = tween(150),
-                            label = "modeItemBg"
+                            },
+                            onError = {}
                         )
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(itemBgColor)
-                                .clickable(
-                                    interactionSource = interactionSource,
-                                    indication = null
-                                ) {
-                                    bypassMode = modeKey
-                                    val edit = sharedPrefs.edit()
-                                    when (modeKey) {
-                                        "both" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "telegram" -> {
-                                            edit.putBoolean("wants_youtube_bypass", false)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "youtube" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", false)
-                                        }
-                                    }
-                                    edit.putBoolean("service_enabled", false).apply()
-                                    ServiceManager.stop(context)
-                                    val intent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                        action = com.rupleide.netfix.data.STOP_ACTION
-                                    }
-                                    context.startService(intent)
-                                    TgProxyController.stop()
-                                    showBypassModeDialog = false
-                                }
-                                .padding(vertical = 12.dp, horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = modeLabel,
-                                color = if (isSelected) Color(0xFF3B82F6) else Color(0xFFF4F4F5),
-                                fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (isSelected) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_bolt),
-                                    contentDescription = null,
-                                    tint = Color(0xFF3B82F6),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                    } else {
+                        val startIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
+                            action = com.rupleide.netfix.data.START_ACTION
+                            putExtra("open_tg", openTg)
                         }
-                        HorizontalDivider(color = Color(0xFF242424))
+                        androidx.core.content.ContextCompat.startForegroundService(context, startIntent)
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF242426))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { showBypassModeDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                }
+                val activity = context as? android.app.Activity
+                activity?.finishAndRemoveTask()
             }
         }
-    }
-
-    if (showResetDialog) {
-        Dialog(onDismissRequest = { showResetDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Сброс приложения",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Text(
-                    text = "Выберите вариант сброса на выбор:",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 14.sp
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                val resetAllInteraction = remember { MutableInteractionSource() }
-                val resetAllPressed by resetAllInteraction.collectIsPressedAsState()
-                val resetAllHovered by resetAllInteraction.collectIsHoveredAsState()
-                val resetAllFocused by resetAllInteraction.collectIsFocusedAsState()
-                val resetAllHighlighted = resetAllPressed || resetAllHovered || resetAllFocused
-
-                val resetAllBgColor by animateColorAsState(
-                    targetValue = if (resetAllHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-                val resetAllBorderColor by animateColorAsState(
-                    targetValue = if (resetAllHighlighted) Color.White else Color(0x1AFFFFFF),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(resetAllBgColor)
-                        .border(1.dp, resetAllBorderColor, RoundedCornerShape(12.dp))
-                        .clickable(
-                            interactionSource = resetAllInteraction,
-                            indication = null
-                        ) {
-                            com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
-                            val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                action = com.rupleide.netfix.data.STOP_ACTION
-                            }
-                            context.startService(stopIntent)
-                            com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
-                            com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                            com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
-
-                            val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-                            prefs.edit().clear().commit()
-                            val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
-                            hintPrefs.edit().clear().commit()
-                            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                            intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                            context.startActivity(intent)
-                            java.lang.System.exit(0)
-                        }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Сбросить всё",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                val resetKeepTestsInteraction = remember { MutableInteractionSource() }
-                val resetKeepTestsPressed by resetKeepTestsInteraction.collectIsPressedAsState()
-                val resetKeepTestsHovered by resetKeepTestsInteraction.collectIsHoveredAsState()
-                val resetKeepTestsFocused by resetKeepTestsInteraction.collectIsFocusedAsState()
-                val resetKeepTestsHighlighted = resetKeepTestsPressed || resetKeepTestsHovered || resetKeepTestsFocused
-
-                val resetKeepTestsBgColor by animateColorAsState(
-                    targetValue = if (resetKeepTestsHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-                val resetKeepTestsBorderColor by animateColorAsState(
-                    targetValue = if (resetKeepTestsHighlighted) Color.White else Color(0x1AFFFFFF),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(resetKeepTestsBgColor)
-                        .border(1.dp, resetKeepTestsBorderColor, RoundedCornerShape(12.dp))
-                        .clickable(
-                            interactionSource = resetKeepTestsInteraction,
-                            indication = null
-                        ) {
-                            com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
-                            val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                action = com.rupleide.netfix.data.STOP_ACTION
-                            }
-                            context.startService(stopIntent)
-                            com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
-                            com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                            com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
-
-                            val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-                            val isSetupComplete = prefs.getBoolean("wizard_is_setup_complete", false)
-                            val isSetupCompleteOld = prefs.getBoolean("is_setup_complete", false)
-                            val currentTestIndex = prefs.getInt("wizard_current_test_index", 0)
-                            val currentTestIndexOld = prefs.getInt("current_test_index", 0)
-                            val selectedAppsSet = prefs.getStringSet("selected_apps", null)
-
-                            prefs.edit().clear().commit()
-
-                            val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
-                            hintPrefs.edit().clear().commit()
-
-                            val edit = prefs.edit()
-                            edit.putBoolean("wizard_is_setup_complete", isSetupComplete)
-                            edit.putBoolean("is_setup_complete", isSetupCompleteOld)
-                            edit.putInt("wizard_current_test_index", currentTestIndex)
-                            edit.putInt("current_test_index", currentTestIndexOld)
-                            if (selectedAppsSet != null) {
-                                edit.putStringSet("selected_apps", selectedAppsSet)
-                            }
-                            edit.commit()
-
-                            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                            intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                            context.startActivity(intent)
-                            java.lang.System.exit(0)
-                        }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Сбросить всё, кроме результатов тестов",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                val cancelInteraction = remember { MutableInteractionSource() }
-                val cancelPressed by cancelInteraction.collectIsPressedAsState()
-                val cancelHovered by cancelInteraction.collectIsHoveredAsState()
-                val cancelFocused by cancelInteraction.collectIsFocusedAsState()
-                val cancelHighlighted = cancelPressed || cancelHovered || cancelFocused
-
-                val cancelBgColor by animateColorAsState(
-                    targetValue = if (cancelHighlighted) Color(0xFF38383A) else Color(0xFF242426),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-                val cancelBorderColor by animateColorAsState(
-                    targetValue = if (cancelHighlighted) Color.White else Color(0x1AFFFFFF),
-                    animationSpec = tween(150),
-                    label = ""
-                )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(cancelBgColor)
-                        .border(1.dp, cancelBorderColor, RoundedCornerShape(12.dp))
-                        .clickable(
-                            interactionSource = cancelInteraction,
-                            indication = null
-                        ) { showResetDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-        }
-    }
-
-    if (showUnloadDialog) {
-        Dialog(onDismissRequest = { showUnloadDialog = false }) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 500.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1A1A1A))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = "Запуск в фоне и выход",
-                    color = Color(0xFFF4F4F5),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Выберите режим. Приложение запустит службу и закроется.",
-                    color = Color(0xFFA1A1AA),
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val wantsYt = sharedPrefs.getBoolean("wants_youtube_bypass", true)
-                val wantsTg = sharedPrefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                val currentMode = when {
-                    wantsYt && wantsTg -> "both"
-                    wantsTg -> "telegram"
-                    wantsYt -> "youtube"
-                    else -> "both"
-                }
-
-                val options = listOf(
-                    "both" to "Telegram и YouTube",
-                    "telegram" to "Только Telegram",
-                    "youtube" to "Только YouTube"
-                )
-
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    options.forEach { (key, label) ->
-                        val isSelected = currentMode == key
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    showUnloadDialog = false
-                                    val edit = sharedPrefs.edit()
-                                    when (key) {
-                                        "both" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "telegram" -> {
-                                            edit.putBoolean("wants_youtube_bypass", false)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", true)
-                                        }
-                                        "youtube" -> {
-                                            edit.putBoolean("wants_youtube_bypass", true)
-                                            edit.putBoolean("telegram_proxy_enabled_by_user", false)
-                                        }
-                                    }
-                                    edit.putBoolean("service_enabled", true)
-                                    edit.putBoolean("econom_mode", true)
-                                    edit.apply()
-
-                                    ServiceManager.stop(context)
-                                    val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                        action = com.rupleide.netfix.data.STOP_ACTION
-                                    }
-                                    context.startService(stopIntent)
-                                    TgProxyController.stop()
-
-                                    com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                                    com.rupleide.netfix.service.WatchdogReceiver.cancelWatchdogAlarm(context)
-
-                                    scope.launch {
-                                        kotlinx.coroutines.delay(800)
-                                        val wantsYoutube = sharedPrefs.getBoolean("wants_youtube_bypass", true)
-                                        val wantsTelegram = sharedPrefs.getBoolean("telegram_proxy_enabled_by_user", true)
-
-                                        if (wantsYoutube) {
-                                            ServiceManager.start(context, Mode.VPN)
-                                        }
-
-                                        if (wantsTelegram) {
-                                            val openTg = sharedPrefs.getBoolean("open_tg_on_connect", true)
-                                            if (wantsYoutube) {
-                                                TgProxyController.startAsync(
-                                                    context = context,
-                                                    onSuccess = {
-                                                        val port = TgProxyController.getPort(context)
-                                                        val secret = TgProxyController.getOrGenerateSecret(context)
-                                                        val url = TgProxyController.getTgProxyUrl(
-                                                            TgProxyController.DEFAULT_BIND_IP,
-                                                            port,
-                                                            secret
-                                                        )
-                                                        val alreadyConfigured = sharedPrefs.getBoolean("tg_proxy_configured", false)
-                                                        if (openTg && !alreadyConfigured) {
-                                                            val tgIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
-                                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                            }
-                                                            try {
-                                                                context.startActivity(tgIntent)
-                                                                sharedPrefs.edit().putBoolean("tg_proxy_configured", true).apply()
-                                                            } catch (_: Exception) {}
-                                                        }
-                                                    },
-                                                    onError = {}
-                                                )
-                                            } else {
-                                                val startIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                                                    action = com.rupleide.netfix.data.START_ACTION
-                                                    putExtra("open_tg", openTg)
-                                                }
-                                                androidx.core.content.ContextCompat.startForegroundService(context, startIntent)
-                                            }
-                                        }
-
-                                        val activity = context as? android.app.Activity
-                                        activity?.finishAndRemoveTask()
-                                    }
-                                }
-                                .padding(vertical = 12.dp, horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = label,
-                                color = if (isSelected) Color(0xFF3B82F6) else Color(0xFFF4F4F5),
-                                fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.weight(1f).padding(end = 8.dp)
-                            )
-                            if (isSelected) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_bolt),
-                                    contentDescription = null,
-                                    tint = Color(0xFF3B82F6),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                        HorizontalDivider(color = Color(0xFF242424))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF242426))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { showUnloadDialog = false }
-                        .padding(vertical = 13.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Отмена",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                }
-            }
-        }
-    }
+    )
 }
-

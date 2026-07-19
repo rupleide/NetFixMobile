@@ -1,6 +1,7 @@
 package com.rupleide.netfix.core.dpibypass
 
 import android.content.Context
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
@@ -188,6 +189,7 @@ object StrategyTestManager {
 
         return scope.launch {
             try {
+                Log.i("StrategyTestManager", "Запуск автоподбора стратегий")
                 isTesting = true
                 hasConnectionError = false
                 bestStrategyResult = null
@@ -196,6 +198,7 @@ object StrategyTestManager {
                 currentProgress = "Готовимся к тестированию..."
 
                 if (!checkInternetConnection()) {
+                    Log.e("StrategyTestManager", "Ошибка автоподбора: отсутствует интернет-соединение")
                     hasConnectionError = true
                     currentProgress = "Ошибка: отсутствует интернет-соединение."
                     isTesting = false
@@ -211,6 +214,8 @@ object StrategyTestManager {
                         testResults.add(0, Triple(index + 1, strategy, status))
                     }
                 }
+
+                Log.i("StrategyTestManager", "Автоподбор завершен. Лучшая стратегия: \"$best\"")
 
                 if (best != null) {
                     val formattedBest = best.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
@@ -256,6 +261,7 @@ object StrategyTestManager {
             } finally {
                 isTesting = false
                 currentProgress = "Тестирование завершено"
+                Log.i("StrategyTestManager", "Тестирование полностью завершено")
             }
         }
     }
@@ -297,6 +303,7 @@ object StrategyTestManager {
     }
 
     fun applyStrategy(context: Context, originalIndex: Int, strategy: String) {
+        Log.i("StrategyTestManager", "Вручную применена стратегия №$originalIndex: \"$strategy\"")
         val prefs = context.getSharedPreferences(
             context.packageName + "_preferences",
             Context.MODE_PRIVATE

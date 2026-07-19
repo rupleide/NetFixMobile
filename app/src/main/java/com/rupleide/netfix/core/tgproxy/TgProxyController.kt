@@ -1,7 +1,7 @@
 package com.rupleide.netfix.core.tgproxy
 
 import android.content.Context
-import android.util.Log
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
@@ -123,6 +123,8 @@ object TgProxyController {
         val cfEnabled = isCfEnabled(context)
         val cfPriority = isCfPriority(context)
 
+        Log.i("TgProxyController", "Запуск TG-прокси на порту $port (pool: $poolSize, cf: $cfEnabled, priority: $cfPriority, dc: \"$dcIps\")")
+
         Thread {
             try {
                 NativeProxy.setPoolSize(poolSize)
@@ -148,14 +150,17 @@ object TgProxyController {
                 }
             }
             if (success) {
+                Log.i("TgProxyController", "Порт TG-прокси $port успешно открыт")
                 onSuccess()
             } else {
+                Log.e("TgProxyController", "Не удалось открыть порт TG-прокси $port за отведенное время")
                 onError()
             }
         }.start()
     }
 
     fun stop() {
+        Log.i("TgProxyController", "Остановка TG-прокси")
         Thread {
             try {
                 NativeProxy.stopProxy()

@@ -46,9 +46,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
 import com.rupleide.netfix.core.tgproxy.TgProxyController
 import com.rupleide.netfix.ui.components.NetFixSwitch
+import com.rupleide.netfix.ui.components.NetFixTextField
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 
 @Composable
 fun TgProxyTab(
@@ -84,13 +87,16 @@ fun TgProxyTab(
 
     var latency by remember { mutableIntStateOf(-1) }
 
-    LaunchedEffect(port) {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(port, lifecycleOwner) {
         val currentPort = port.toIntOrNull() ?: TgProxyController.DEFAULT_PORT
-        while (true) {
-            latency = withContext(Dispatchers.IO) {
-                TgProxyController.measureLatency(TgProxyController.DEFAULT_BIND_IP, currentPort)
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            while (true) {
+                latency = withContext(Dispatchers.IO) {
+                    TgProxyController.measureLatency(TgProxyController.DEFAULT_BIND_IP, currentPort)
+                }
+                delay(5000)
             }
-            delay(2000)
         }
     }
 
@@ -107,7 +113,7 @@ fun TgProxyTab(
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .verticalScroll(scrollState)
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = navOverlayReserve + 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
         Column(
@@ -136,7 +142,7 @@ fun TgProxyTab(
                 )
             }
 
-            OutlinedTextField(
+            NetFixTextField(
                 value = port,
                 onValueChange = { value ->
                     val filtered = value.filter { it.isDigit() }
@@ -144,22 +150,14 @@ fun TgProxyTab(
                         port = filtered
                         val newPort = filtered.toIntOrNull() ?: TgProxyController.DEFAULT_PORT
                         TgProxyController.setPort(context, newPort)
+                        com.rupleide.netfix.core.debug.AppDebugManager.log("Изменен порт TG прокси: $newPort")
                     }
                 },
-                label = { Text("Порт подключения") },
+                label = "Порт подключения",
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
                 modifier = Modifier
                     .focusRequester(focusRequester)
-                    .fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color(0xFF3B82F6),
-                    unfocusedBorderColor = Color(0xFFA1A1AA),
-                    focusedLabelColor = Color(0xFF3B82F6),
-                    unfocusedLabelColor = Color(0xFFA1A1AA),
-                    focusedTextColor = Color(0xFFF4F4F5),
-                    unfocusedTextColor = Color(0xFFF4F4F5)
-                )
+                    .fillMaxWidth()
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -192,22 +190,14 @@ fun TgProxyTab(
 
             if (!isDcAuto) {
                 Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
+                NetFixTextField(
                     value = dcIps,
                     onValueChange = { value ->
                         dcIps = value
                         TgProxyController.setDcIps(context, value)
                     },
-                    label = { Text("IP-адреса DC (например 2:ip,4:ip)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color(0xFF3B82F6),
-                        unfocusedBorderColor = Color(0xFFA1A1AA),
-                        focusedLabelColor = Color(0xFF3B82F6),
-                        unfocusedLabelColor = Color(0xFFA1A1AA),
-                        focusedTextColor = Color(0xFFF4F4F5),
-                        unfocusedTextColor = Color(0xFFF4F4F5)
-                    )
+                    label = "IP-адреса DC (например 2:ip,4:ip)",
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -301,11 +291,11 @@ fun TgProxyTab(
                 )
             }
 
-            OutlinedTextField(
+            NetFixTextField(
                 value = secretKey,
                 onValueChange = {},
                 readOnly = true,
-                label = { Text("Секретный ключ") },
+                label = "Секретный ключ",
                 singleLine = true,
                 visualTransformation = if (showSecret) VisualTransformation.None else PasswordVisualTransformation(),
                 trailingIcon = {
@@ -317,13 +307,7 @@ fun TgProxyTab(
                         )
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color(0xFF3B82F6),
-                    unfocusedBorderColor = Color(0xFFA1A1AA),
-                    focusedTextColor = Color(0xFFF4F4F5),
-                    unfocusedTextColor = Color(0xFFF4F4F5)
-                )
+                modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -335,9 +319,9 @@ fun TgProxyTab(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF242426))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
+                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = ripple()
@@ -368,8 +352,8 @@ fun TgProxyTab(
                         Text(
                             text = "Копировать",
                             color = Color(0xFFF4F4F5),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1
                         )
                     }
@@ -378,9 +362,9 @@ fun TgProxyTab(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF242426))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
+                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = ripple()
@@ -404,8 +388,8 @@ fun TgProxyTab(
                         Text(
                             text = "Пересоздать",
                             color = Color(0xFFF4F4F5),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1
                         )
                     }
@@ -528,7 +512,6 @@ fun TgProxyTab(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(navOverlayReserve))
     }
 }
 }

@@ -6,7 +6,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
-import android.util.Log
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.rupleide.netfix.R
@@ -35,23 +35,9 @@ class TgProxyService : LifecycleService() {
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     private fun acquireWakeLock() {
-        if (wakeLock == null) {
-            val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-            wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "NetFix::TgProxyWakeLock").apply {
-                acquire()
-            }
-        }
     }
 
     private fun releaseWakeLock() {
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {
-        } finally {
-            wakeLock = null
-        }
     }
 
     override fun onCreate() {
@@ -73,6 +59,7 @@ class TgProxyService : LifecycleService() {
 
         val action = intent?.action
         if (action == START_ACTION) {
+            Log.i(TAG, "Служба TgProxyService: получен запрос на запуск")
             acquireWakeLock()
             startForeground()
             val openTg = intent.getBooleanExtra("open_tg", false)
@@ -80,6 +67,7 @@ class TgProxyService : LifecycleService() {
                 TgProxyController.startAsync(
                     context = this@TgProxyService,
                     onSuccess = {
+                        Log.i(TAG, "Служба TgProxyService успешно запущена")
                         setStatus(AppStatus.Running, Mode.Proxy)
                         val broadcastIntent = Intent(STARTED_BROADCAST).apply {
                             putExtra(SENDER, Sender.Proxy.ordinal)
@@ -106,6 +94,7 @@ class TgProxyService : LifecycleService() {
                         }
                     },
                     onError = {
+                        Log.e(TAG, "Служба TgProxyService завершилась с ошибкой запуска")
                         setStatus(AppStatus.Halted, Mode.Proxy)
                         val broadcastIntent = Intent(FAILED_BROADCAST).apply {
                             putExtra(SENDER, Sender.Proxy.ordinal)
@@ -117,6 +106,7 @@ class TgProxyService : LifecycleService() {
             }
             return START_STICKY
         } else if (action == STOP_ACTION) {
+            Log.i(TAG, "Служба TgProxyService: получен запрос на остановку")
             releaseWakeLock()
             TgProxyController.stop()
             setStatus(AppStatus.Halted, Mode.Proxy)

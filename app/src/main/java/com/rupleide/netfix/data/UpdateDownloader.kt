@@ -9,6 +9,7 @@ import android.content.pm.PackageInstaller
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.rupleide.netfix.R
+import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -30,7 +31,7 @@ object UpdateDownloader {
         onError: ((String) -> Unit)? = null
     ) {
         val appContext = context.applicationContext
-        android.util.Log.e("NetFixDebug", "downloadAndInstall called with URL: $downloadUrl")
+        Log.e("NetFixDebug", "downloadAndInstall called with URL: $downloadUrl")
         android.widget.Toast.makeText(appContext, "Загрузка обновления...", android.widget.Toast.LENGTH_SHORT).show()
         val notificationManager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -122,7 +123,7 @@ object UpdateDownloader {
                     }
                 }
 
-                android.util.Log.e("NetFixDebug", "Download finished, file size: ${destinationFile.length()}")
+                Log.e("NetFixDebug", "Download finished, file size: ${destinationFile.length()}")
                 builder.setContentTitle("Установка обновления")
                     .setContentText("Инициализация установки...")
                     .setProgress(0, 0, true)
@@ -135,7 +136,7 @@ object UpdateDownloader {
                 installPackage(appContext, destinationFile)
                 notificationManager.cancel(NOTIFICATION_ID)
             } catch (e: Exception) {
-                android.util.Log.e("NetFixDebug", "Update error", e)
+                Log.e("NetFixDebug", "Update error", e)
                 CoroutineScope(Dispatchers.Main).launch {
                     android.widget.Toast.makeText(appContext, "Ошибка: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                     onError?.invoke(e.message ?: "Не удалось скачать файл")
@@ -150,7 +151,7 @@ object UpdateDownloader {
     }
 
     private fun installPackage(context: Context, file: File) {
-        android.util.Log.e("NetFixDebug", "installPackage started, size: ${file.length()}")
+        Log.e("NetFixDebug", "installPackage started, size: ${file.length()}")
         val authority = "${context.packageName}.fileprovider"
         val uri = androidx.core.content.FileProvider.getUriForFile(context, authority, file)
         val intent = Intent(Intent.ACTION_VIEW).apply {
