@@ -330,6 +330,9 @@ fun SettingsTab(
     var autoConnect by remember { mutableStateOf(false) }
     var openTgOnConnect by remember { mutableStateOf(false) }
     var autoUpdate by remember { mutableStateOf(UpdateManager.isAutoUpdateEnabled(context)) }
+    var tgProxyWakeLock by remember {
+        mutableStateOf(sharedPrefs.getBoolean("tg_proxy_wakelock_enabled", false))
+    }
     var performanceMode by remember {
         mutableStateOf(
             sharedPrefs.getBoolean("performance_mode", false)
@@ -343,6 +346,42 @@ fun SettingsTab(
     var showUnloadDialog by remember { mutableStateOf(false) }
     LaunchedEffect(showBypassModeDialog, showDebugMenuDialog, showDnsDialog, showExcludedAppsDialog, showResetDialog, showUnloadDialog) {
         com.rupleide.netfix.data.isActionSheetVisibleGlobal = showBypassModeDialog || showDebugMenuDialog || showDnsDialog || showExcludedAppsDialog || showResetDialog || showUnloadDialog
+    }
+
+    val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val jsonString = com.rupleide.netfix.core.dpibypass.StrategyTestManager.exportWorkingStrategiesJson(context)
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(jsonString.toByteArray(Charsets.UTF_8))
+                }
+                android.widget.Toast.makeText(context, "Стратегии успешно экспортированы", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Ошибка экспорта: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.bufferedReader().readText()
+                } ?: ""
+                val count = com.rupleide.netfix.core.dpibypass.StrategyTestManager.importStrategiesFromJson(context, jsonString)
+                if (count > 0) {
+                    android.widget.Toast.makeText(context, "Успешно импортировано способов: $count (помечены EX:)", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    android.widget.Toast.makeText(context, "Файл не содержит стратегий", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Ошибка импорта: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
     }
     var bypassMode by remember {
         val wantsYt = sharedPrefs.getBoolean("wants_youtube_bypass", true)
@@ -398,30 +437,39 @@ fun SettingsTab(
         }
     }
 
+    val defaultPkgs = setOf(
+        "org.smarttube.stable",
+        "org.smarttube.beta",
+        "com.google.android.youtube",
+        "com.google.android.youtube.tv",
+        "com.liskovsoft.videomanager.v2",
+        "com.liskovsoft.smarttubetv.beta",
+        "com.teamsmart.videomanager.tv",
+        "app.revanced.android.youtube",
+        "com.google.android.apps.youtube.music",
+        "com.google.android.apps.youtube.kids",
+        "org.schabi.newpipe",
+        "org.schabi.newpipe.legacy",
+        "com.kapp.youtube",
+        "com.bg.vanced",
+        "com.libretube",
+        "com.liskovsoft.smarttubetv"
+    )
     var selectedApps by remember {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
         val saved = prefs.getStringSet("selected_apps", null)
         val initial = if (saved == null) {
-            val defaultPkgs = setOf(
-                "com.google.android.youtube",
-                "com.google.android.youtube.tv",
-                "com.liskovsoft.videomanager.v2",
-                "com.liskovsoft.smarttubetv.beta",
-                "com.teamsmart.videomanager.tv",
-                "app.revanced.android.youtube",
-                "com.google.android.apps.youtube.music",
-                "com.google.android.apps.youtube.kids",
-                "org.schabi.newpipe",
-                "org.schabi.newpipe.legacy",
-                "com.kapp.youtube",
-                "com.bg.vanced",
-                "com.libretube",
-                "com.liskovsoft.smarttubetv"
-            )
             prefs.edit().putStringSet("selected_apps", defaultPkgs).apply()
             defaultPkgs
         } else {
-            saved
+            val missing = defaultPkgs.filter { it !in saved }
+            if (missing.isNotEmpty()) {
+                val updated = saved + defaultPkgs
+                prefs.edit().putStringSet("selected_apps", updated).apply()
+                updated
+            } else {
+                saved
+            }
         }
         mutableStateOf(initial)
     }
@@ -824,6 +872,18 @@ fun SettingsTab(
                     },
                     onClick = { showBypassModeDialog = true }
                 )
+
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+
+                SettingsSwitchRow(
+                    title = "Режим стабильного прокси",
+                    subtitle = "Включите, если Telegram-прокси отключается через 10–15 сек. Может повлиять на расход батареи.",
+                    checked = tgProxyWakeLock,
+                    onCheckedChange = { checked ->
+                        tgProxyWakeLock = checked
+                        sharedPrefs.edit().putBoolean("tg_proxy_wakelock_enabled", checked).apply()
+                    }
+                )
             }
 
             Column(
@@ -925,6 +985,74 @@ fun SettingsTab(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                 }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_edit_custom),
+                        contentDescription = null,
+                        tint = Color(0xFFF4F4F5),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Экспорт и импорт стратегий",
+                        color = Color(0xFFF4F4F5),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+                Text(
+                    text = "Сохраняйте проверенные и избранные способы обхода в файл или загружайте конфигурации от других пользователей.",
+                    color = Color(0xFFA1A1AA),
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                SettingsClickRow(
+                    title = "Экспорт рабочих способов",
+                    subtitle = "Сохранить в .json только избранные и проверенные способы",
+                    actionContent = {
+                        SettingsActionButton(
+                            label = "Экспорт",
+                            onClick = {
+                                exportLauncher.launch("netfix_strategies.json")
+                            }
+                        )
+                    },
+                    onClick = {
+                        exportLauncher.launch("netfix_strategies.json")
+                    }
+                )
+
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+
+                SettingsClickRow(
+                    title = "Импорт способов",
+                    subtitle = "Загрузить стратегии из файла (получат пометку EX:)",
+                    actionContent = {
+                        SettingsActionButton(
+                            label = "Импорт",
+                            onClick = {
+                                importLauncher.launch("*/*")
+                            }
+                        )
+                    },
+                    onClick = {
+                        importLauncher.launch("*/*")
+                    }
+                )
             }
 
             Column(

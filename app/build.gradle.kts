@@ -17,8 +17,8 @@ android {
         applicationId = "com.rupleide.netfix"
         minSdk = 26
         targetSdk = 26
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -116,5 +116,5 @@ tasks.named("preBuild") {
 }
 
 base {
-    archivesName.set("NetFix-Mobile-v1.0.2")
+    archivesName.set("NetFix-Mobile-v1.0.3")
 }

@@ -389,12 +389,12 @@ object StrategyTestManager {
     }
 
     fun getStrategyName(strategy: String, context: Context? = null): String {
-        val clean = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+        val clean = strategy.replace("{sni}", StrategyTester.YOUTUBE_SNI_DOMAINS)
         val custom = customNames[clean] ?: customNames[strategy]
         if (custom != null) return custom
         
         val index = StrategyTester.defaultStrategies.indexOfFirst {
-            it.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == clean
+            it.replace("{sni}", StrategyTester.YOUTUBE_SNI_DOMAINS) == clean
         }
         return if (index >= 0) "Способ ${index + 1}" else "Кастомный способ"
     }
@@ -403,5 +403,93 @@ object StrategyTestManager {
         val active = appliedStrategy
         if (active == null) return "Способ по умолчанию"
         return getStrategyName(active, context)
+    }
+
+    fun exportWorkingStrategiesJson(context: Context): String {
+        val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        val root = org.json.JSONObject()
+        root.put("version", 1)
+        root.put("app", "NetFix")
+        val array = org.json.JSONArray()
+
+        val exportedSet = LinkedHashSet<String>()
+
+        pinnedStrategies.forEach { (strategy, pinned) ->
+            if (pinned && !deletedStrategies.containsKey(strategy)) {
+                exportedSet.add(strategy)
+            }
+        }
+
+        testResults.forEach { item ->
+            val strategy = item.second
+            val normalized = strategy.replace("{sni}", StrategyTester.YOUTUBE_SNI_DOMAINS)
+            val manualStatus = prefs.getString("manual_status_$normalized", null)
+            val isWorking = manualStatus == "working"
+            if (isWorking && !deletedStrategies.containsKey(strategy)) {
+                exportedSet.add(strategy)
+            }
+        }
+
+        exportedSet.forEach { strategy ->
+            val obj = org.json.JSONObject()
+            obj.put("strategy", strategy)
+            val name = getStrategyName(strategy, context)
+            obj.put("name", name)
+            val notes = strategyNotes[strategy]
+            if (!notes.isNullOrBlank()) {
+                obj.put("notes", notes)
+            }
+            array.put(obj)
+        }
+
+        root.put("strategies", array)
+        return root.toString(2)
+    }
+
+    fun importStrategiesFromJson(context: Context, jsonString: String): Int {
+        try {
+            val root = org.json.JSONObject(jsonString)
+            val array = root.optJSONArray("strategies") ?: return 0
+            var importedCount = 0
+
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val strategy = obj.optString("strategy", "")
+                if (strategy.isBlank()) continue
+
+                val rawName = obj.optString("name", "Способ")
+                val cleanName = if (rawName.startsWith("EX: ")) rawName else "EX: $rawName"
+                val notes = obj.optString("notes", "")
+
+                customNames[strategy] = cleanName
+                pinnedStrategies[strategy] = true
+                if (notes.isNotBlank()) {
+                    strategyNotes[strategy] = notes
+                }
+
+                val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+                val normalized = strategy.replace("{sni}", StrategyTester.YOUTUBE_SNI_DOMAINS)
+                prefs.edit().putString("manual_status_$normalized", "working").apply()
+
+                val existingIndex = testResults.indexOfFirst { it.second == strategy }
+                if (existingIndex >= 0) {
+                    testResults[existingIndex] = Triple(testResults[existingIndex].first, strategy, "Импортировано (Успешно)")
+                } else {
+                    val newIdx = testResults.size + 1
+                    testResults.add(0, Triple(newIdx, strategy, "Импортировано (Успешно)"))
+                }
+
+                importedCount++
+            }
+
+            if (importedCount > 0) {
+                saveCustomizations(context)
+                saveResults(context)
+            }
+            return importedCount
+        } catch (e: Exception) {
+            Log.e("StrategyTestManager", "Ошибка импорта JSON", e)
+            return 0
+        }
     }
 }

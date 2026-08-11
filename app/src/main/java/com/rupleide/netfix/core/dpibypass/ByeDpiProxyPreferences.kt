@@ -22,7 +22,7 @@ class ByeDpiProxyCmdPreferences(val args: Array<String>) : ByeDpiProxyPreference
     companion object {
         private fun parseCmdToArguments(preferences: SharedPreferences, context: Context): Array<String> {
             val cmd = preferences.getStringNotNull("byedpi_cmd_args", "-o1 -a1 -r-5+se")
-            val preparedCmd = getLists(cmd, context)
+            val preparedCmd = getLists(cmd, context).replace("{sni}", StrategyTester.YOUTUBE_SNI_DOMAINS)
 
             val firstArgIndex = preparedCmd.indexOf("-")
             val args = (if (firstArgIndex > 0) preparedCmd.substring(firstArgIndex) else preparedCmd).trim()

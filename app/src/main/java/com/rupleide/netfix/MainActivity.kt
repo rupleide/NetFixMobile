@@ -570,9 +570,9 @@ private object MaterialTheme3TypeOverride {
     val labelSmall = androidx.compose.ui.text.TextStyle(
         fontFamily = androidx.compose.ui.text.font.FontFamily.Default,
         fontWeight = FontWeight.Medium,
-        fontSize = 10.sp,
-        lineHeight = 14.sp,
-        letterSpacing = 0.sp
+        fontSize = 9.5.sp,
+        lineHeight = 13.sp,
+        letterSpacing = (-0.25).sp
     )
 }
 

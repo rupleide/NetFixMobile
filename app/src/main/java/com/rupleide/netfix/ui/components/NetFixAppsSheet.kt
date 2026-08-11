@@ -62,6 +62,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.Transition
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -127,6 +128,17 @@ fun NetFixAppsSheet(
     val transition = updateTransition(targetState = visible, label = "AppsSheetTransition")
 
     val closeFocusRequester = remember { FocusRequester() }
+    val firstItemFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(visible) {
+        if (visible) {
+            delay(350)
+            try {
+                firstItemFocusRequester.requestFocus()
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     if (transition.currentState || transition.targetState) {
         BackHandler(onBack = onDismissRequest)
@@ -421,7 +433,7 @@ fun NetFixAppsSheet(
                                             modifier = Modifier.weight(1f),
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            items(filteredApps) { pkg ->
+                                            itemsIndexed(filteredApps) { index, pkg ->
                                                 val appName = pkg.applicationInfo?.let {
                                                     context.packageManager.getApplicationLabel(it).toString()
                                                 } ?: pkg.packageName
@@ -429,7 +441,8 @@ fun NetFixAppsSheet(
                                                     appName = appName,
                                                     packageName = pkg.packageName,
                                                     selected = selectedApps.contains(pkg.packageName),
-                                                    onToggled = { onAppToggled(pkg.packageName) }
+                                                    onToggled = { onAppToggled(pkg.packageName) },
+                                                    focusRequester = if (index == 0) firstItemFocusRequester else null
                                                 )
                                             }
                                         }
@@ -597,7 +610,7 @@ fun NetFixAppsSheet(
                                             modifier = Modifier.weight(1f),
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            items(filteredApps) { pkg ->
+                                            itemsIndexed(filteredApps) { index, pkg ->
                                                 val appName = pkg.applicationInfo?.let {
                                                     context.packageManager.getApplicationLabel(it).toString()
                                                 } ?: pkg.packageName
@@ -605,7 +618,8 @@ fun NetFixAppsSheet(
                                                     appName = appName,
                                                     packageName = pkg.packageName,
                                                     selected = selectedApps.contains(pkg.packageName),
-                                                    onToggled = { onAppToggled(pkg.packageName) }
+                                                    onToggled = { onAppToggled(pkg.packageName) },
+                                                    focusRequester = if (index == 0) firstItemFocusRequester else null
                                                 )
                                             }
                                         }
@@ -735,7 +749,8 @@ private fun AppOptionButton(
     appName: String,
     packageName: String,
     selected: Boolean,
-    onToggled: () -> Unit
+    onToggled: () -> Unit,
+    focusRequester: FocusRequester? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -760,24 +775,32 @@ private fun AppOptionButton(
     val currentBorderColor by animateColorAsState(
         targetValue = when {
             isPressed -> Color.White
-            isFocused -> Color(0x33FFFFFF)
+            isFocused -> Color(0xFF3B82F6)
             else -> baseBorder
         },
         animationSpec = tween(150),
         label = "appBorder"
     )
 
+    val baseModifier = Modifier
+        .fillMaxWidth()
+        .height(64.dp)
+    val focusedModifier = if (focusRequester != null) baseModifier.focusRequester(focusRequester) else baseModifier
+
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .focusable()
+        modifier = focusedModifier
             .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
             .onKeyEvent { keyEvent ->
-                val isDpadClick = keyEvent.key == Key.DirectionCenter || keyEvent.key == Key.Enter
-                if (isDpadClick && keyEvent.type == KeyEventType.KeyUp) {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onToggled()
+                val isDpadClick = keyEvent.key == Key.DirectionCenter ||
+                    keyEvent.key == Key.Enter ||
+                    keyEvent.key == Key.NumPadEnter ||
+                    keyEvent.key == Key.Spacebar
+                if (isDpadClick) {
+                    if (keyEvent.type == KeyEventType.KeyUp) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onToggled()
+                    }
                     true
                 } else {
                     false
@@ -796,7 +819,7 @@ private fun AppOptionButton(
                 }
             )
             .background(currentBorderColor, RoundedCornerShape(12.dp))
-            .padding(1.dp)
+            .padding(if (isFocused) 2.dp else 1.dp)
             .background(currentBgColor, RoundedCornerShape(11.dp))
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.CenterStart

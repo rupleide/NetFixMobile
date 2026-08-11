@@ -35,9 +35,25 @@ class TgProxyService : LifecycleService() {
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     private fun acquireWakeLock() {
+        val prefs = getSharedPreferences(packageName + "_preferences", MODE_PRIVATE)
+        if (!prefs.getBoolean("tg_proxy_wakelock_enabled", false)) return
+        if (wakeLock == null) {
+            val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "NetFix::TgProxyWakeLock").apply {
+                acquire()
+            }
+        }
     }
 
     private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (_: Exception) {
+        } finally {
+            wakeLock = null
+        }
     }
 
     override fun onCreate() {

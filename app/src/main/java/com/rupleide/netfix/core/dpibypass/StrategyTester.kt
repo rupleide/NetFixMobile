@@ -14,6 +14,8 @@ import java.net.URL
 
 class StrategyTester(private val context: Context) {
     companion object {
+        const val YOUTUBE_SNI_DOMAINS = "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com"
+
         val defaultStrategies = listOf(
             "-o1 -d1 -a1 -At,r,s -s1 -d1 -s5+s -s10+s -s15+s -s20+s -r1+s -S -a1 -As -s1 -d1 -s5+s -s10+s -s15+s -s20+s -S -a1",
             "-n {sni} -Qr -s1:3+sm -a1 -As -d1:3 -q7 -o2 -a1",

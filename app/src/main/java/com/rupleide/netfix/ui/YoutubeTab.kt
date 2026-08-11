@@ -111,11 +111,8 @@ fun YoutubeTab(
     var activeCmd by remember { mutableStateOf(sharedPrefs.getString("byedpi_cmd_args", null)) }
     var manualMode by remember { mutableStateOf(sharedPrefs.getBoolean("strategy_manual_mode", false)) }
     val advancedMode = true
-    val smartTubeInstallFocusRequester = remember { FocusRequester() }
-    val noStrategiesRetryFocusRequester = remember { FocusRequester() }
     val autoModeToggleFocusRequester = remember { FocusRequester() }
     val manualModeListFocusRequester = remember { FocusRequester() }
-    val wizardPlayFocusRequester = remember { FocusRequester() }
     val manualOpenYoutubeFocusRequester = remember { FocusRequester() }
 
     fun saveManualMode(enabled: Boolean) {
@@ -580,30 +577,6 @@ fun YoutubeTab(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.TopCenter
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(1.dp)
-                        .focusRequester(focusRequester)
-                        .focusable()
-                        .onFocusChanged { focusState ->
-                            if (focusState.isFocused) {
-                                if (isSmartTv && isSmartTube && !smartTubeInstalled.value) {
-                                    smartTubeInstallFocusRequester.requestFocus()
-                                } else if (noStrategiesWorked) {
-                                    noStrategiesRetryFocusRequester.requestFocus()
-                                } else if (isSetupComplete) {
-                                    if (manualMode) {
-                                        manualModeListFocusRequester.requestFocus()
-                                    } else {
-                                        autoModeToggleFocusRequester.requestFocus()
-                                    }
-                                } else {
-                                    wizardPlayFocusRequester.requestFocus()
-                                }
-                            }
-                        }
-                )
-
                 Column(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -670,7 +643,7 @@ fun YoutubeTab(
                             .clip(RoundedCornerShape(12.dp))
                             .background(btnBgColor)
                             .border(1.dp, btnBorderColor, RoundedCornerShape(12.dp))
-                            .focusRequester(smartTubeInstallFocusRequester)
+                            .focusRequester(focusRequester)
                             .focusProperties { down = navBarFocusRequester }
                             .clickable(
                                 interactionSource = btnInteractionSource,
@@ -1022,7 +995,7 @@ fun YoutubeTab(
                                         if (autoHighlighted1) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(10.dp))
                                         else Modifier
                                     )
-                                    .focusRequester(autoModeToggleFocusRequester)
+                                    .focusRequester(focusRequester)
                                     .clickable(
                                         interactionSource = autoInteractionSource1,
                                         indication = null
@@ -1093,7 +1066,7 @@ fun YoutubeTab(
                             .border(1.dp, openBorderColor, RoundedCornerShape(12.dp))
                             .focusRequester(manualOpenYoutubeFocusRequester)
                             .onPreviewKeyEvent { event ->
-                                if (event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
+                                if (manualMode && event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
                                     try { manualModeListFocusRequester.requestFocus() } catch (_: Exception) {}
                                     true
                                 } else false
@@ -1438,7 +1411,7 @@ fun YoutubeTab(
                             .clip(RoundedCornerShape(12.dp))
                             .background(retryBgColor)
                             .border(1.5.dp, retryBorderColor, RoundedCornerShape(12.dp))
-                            .focusRequester(noStrategiesRetryFocusRequester)
+                            .focusRequester(focusRequester)
                             .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                             .clickable(
                                 interactionSource = retryInteractionSource,
@@ -1625,7 +1598,7 @@ fun YoutubeTab(
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(testBtnBgColor)
                                 .border(1.dp, testBtnBorderColor, RoundedCornerShape(12.dp))
-                                .focusRequester(wizardPlayFocusRequester)
+                                .focusRequester(focusRequester)
                                 .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                 .clickable(
                                     interactionSource = testBtnInteractionSource,
@@ -1967,7 +1940,7 @@ fun YoutubeTab(
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(playBgColor)
                                 .border(1.dp, playBorderColor, RoundedCornerShape(12.dp))
-                                .focusRequester(wizardPlayFocusRequester)
+                                .focusRequester(focusRequester)
                                 .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                 .clickable(
                                     interactionSource = playInteractionSource,
@@ -2011,6 +1984,39 @@ fun YoutubeTab(
                             lineHeight = 20.sp
                         )
 
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF242426))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_info),
+                                    contentDescription = null,
+                                    tint = Color(0xFFF4F4F5),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Совет",
+                                    color = Color(0xFFF4F4F5),
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                            Text(
+                                text = "Если видео не загружается, перед повторной проверкой полностью закройте YouTube и удалите его из списка недавних приложений. Это помогает сбросить соединение.",
+                                color = Color(0xFFA1A1AA),
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -2038,7 +2044,7 @@ fun YoutubeTab(
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(okBgColor)
                                     .border(1.dp, okBorderColor, RoundedCornerShape(12.dp))
-                                    .focusRequester(wizardPlayFocusRequester)
+                                    .focusRequester(focusRequester)
                                     .focusProperties { if (isSmartTube) down = navBarFocusRequester }
                                     .clickable(
                                         interactionSource = okInteractionSource,

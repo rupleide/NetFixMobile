@@ -532,28 +532,37 @@ class ByeDpiVpnService : LifecycleVpnService() {
             builder.setMetered(false)
         }
 
+        val defaultPkgs = setOf(
+            "org.smarttube.stable",
+            "org.smarttube.beta",
+            "com.google.android.youtube",
+            "com.google.android.youtube.tv",
+            "com.liskovsoft.videomanager.v2",
+            "com.liskovsoft.smarttubetv.beta",
+            "com.teamsmart.videomanager.tv",
+            "app.revanced.android.youtube",
+            "com.google.android.apps.youtube.music",
+            "com.google.android.apps.youtube.kids",
+            "org.schabi.newpipe",
+            "org.schabi.newpipe.legacy",
+            "com.kapp.youtube",
+            "com.bg.vanced",
+            "com.libretube",
+            "com.liskovsoft.smarttubetv"
+        )
         val selectedApps = preferences.getStringSet("selected_apps", null)
         val listedApps = if (selectedApps == null) {
-            val defaultPkgs = setOf(
-                "com.google.android.youtube",
-                "com.google.android.youtube.tv",
-                "com.liskovsoft.videomanager.v2",
-                "com.liskovsoft.smarttubetv.beta",
-                "com.teamsmart.videomanager.tv",
-                "app.revanced.android.youtube",
-                "com.google.android.apps.youtube.music",
-                "com.google.android.apps.youtube.kids",
-                "org.schabi.newpipe",
-                "org.schabi.newpipe.legacy",
-                "com.kapp.youtube",
-                "com.bg.vanced",
-                "com.libretube",
-                "com.liskovsoft.smarttubetv"
-            )
             preferences.edit().putStringSet("selected_apps", defaultPkgs).apply()
             defaultPkgs
         } else {
-            selectedApps
+            val missing = defaultPkgs.filter { it !in selectedApps }
+            if (missing.isNotEmpty()) {
+                val updated = selectedApps + defaultPkgs
+                preferences.edit().putStringSet("selected_apps", updated).apply()
+                updated
+            } else {
+                selectedApps
+            }
         }
 
         for (packageName in listedApps) {
