@@ -19,18 +19,29 @@ object ServiceManager {
     private val TAG: String = ServiceManager::class.java.simpleName
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    fun start(context: Context, mode: Mode) {
+    fun start(context: Context, mode: Mode): Boolean {
         Log.i(TAG, "Starting VPN")
         val intent = Intent(context, ByeDpiVpnService::class.java)
         intent.action = START_ACTION
-        ContextCompat.startForegroundService(context, intent)
+        return try {
+            ContextCompat.startForegroundService(context, intent)
+            true
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "VPN start not allowed from background: ${e.message}")
+            false
+        }
     }
 
     fun stop(context: Context) {
+        if (!ByeDpiVpnService.isAlive) return
         Log.i(TAG, "Stopping VPN")
         val intent = Intent(context, ByeDpiVpnService::class.java)
         intent.action = STOP_ACTION
-        ContextCompat.startForegroundService(context, intent)
+        try {
+            context.startService(intent)
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "VPN stop request rejected: ${e.message}")
+        }
     }
 
     fun restart(context: Context, mode: Mode) {
@@ -42,6 +53,10 @@ object ServiceManager {
                     if (appStatus.first == AppStatus.Halted) break
                     delay(100)
                 }
+                context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("service_enabled", true)
+                    .apply()
                 start(context, mode)
             }
         }

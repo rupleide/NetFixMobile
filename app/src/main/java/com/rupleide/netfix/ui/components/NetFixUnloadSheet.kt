@@ -206,7 +206,7 @@ fun NetFixUnloadSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) {
                     detectTapGestures(onTap = { onDismissRequest() })
                 },
@@ -431,7 +431,7 @@ private fun UnloadActionButton(
         label = "unloadPress"
     )
     val bgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else UlButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else UlButtonBackground,
         animationSpec = tween(150),
         label = "unloadBg"
     )
@@ -537,7 +537,7 @@ private fun UnloadCloseButton(
         label = "uClosePress"
     )
     val bgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else UlButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else UlButtonBackground,
         animationSpec = tween(150),
         label = "uCloseBg"
     )

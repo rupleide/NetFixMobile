@@ -2,13 +2,25 @@ package com.rupleide.netfix.core.tgproxy
 
 import android.content.Context
 import com.rupleide.netfix.core.debug.AppDebugManager as Log
+import com.rupleide.netfix.core.dpibypass.ByeDpiVpnService
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.Executors
 
 object TgProxyController {
     const val DEFAULT_PORT = 1443
     const val DEFAULT_BIND_IP = "127.0.0.1"
+    private const val NATIVE_ALREADY_RUNNING = -1
+    private const val OWN_VPN_SETTLE_MS = 2_000L
+
+    private val nativeExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "tgproxy-native").apply { isDaemon = true }
+    }
+
+    @Volatile
+    var isRunning: Boolean = false
+        private set
 
     private fun generateSecret(): String {
         val bytes = ByteArray(16)
@@ -31,7 +43,10 @@ object TgProxyController {
 
     fun regenerateSecret(context: Context): String {
         val secret = generateSecret()
-        getSharedPrefs(context).edit().putString("secret_key", secret).apply()
+        getSharedPrefs(context).edit()
+            .putString("secret_key", secret)
+            .putBoolean("tg_proxy_configured", false)
+            .apply()
         return secret
     }
 
@@ -125,48 +140,125 @@ object TgProxyController {
 
         Log.i("TgProxyController", "Запуск TG-прокси на порту $port (pool: $poolSize, cf: $cfEnabled, priority: $cfPriority, dc: \"$dcIps\")")
 
-        Thread {
-            try {
+        val appContext = context.applicationContext
+
+        nativeExecutor.execute {
+            val started = try {
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, "")
-                NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
+                var code = NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
+                if (code == NATIVE_ALREADY_RUNNING && !isRunning) {
+                    Log.w("TgProxyController", "Нативное ядро уже запущено, но не принадлежит нам: перезапускаю")
+                    NativeProxy.stopProxy()
+                    code = NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
+                }
+                Log.i("TgProxyController", "StartProxy вернул код $code")
+                code == 0 || (code == NATIVE_ALREADY_RUNNING && isRunning)
             } catch (e: Throwable) {
-                Log.e("TgProxyController", "Error in startProxy thread", e)
+                Log.e("TgProxyController", "Error in startProxy", e)
+                false
             }
-        }.start()
 
-        Thread {
-            var success = false
-            for (i in 1..6) {
-                try {
-                    Thread.sleep(500)
-                } catch (e: InterruptedException) {
-                    break
-                }
-                if (isPortOpen(DEFAULT_BIND_IP, port, 1000)) {
-                    success = true
-                    break
-                }
-            }
-            if (success) {
+            if (started) {
                 Log.i("TgProxyController", "Порт TG-прокси $port успешно открыт")
+                isRunning = true
+                startForeignVpnMonitor(appContext)
+                com.rupleide.netfix.service.NetFixTileService.requestRefresh(appContext)
                 onSuccess()
             } else {
-                Log.e("TgProxyController", "Не удалось открыть порт TG-прокси $port за отведенное время")
+                Log.e("TgProxyController", "Не удалось запустить TG-прокси на порту $port")
                 onError()
             }
-        }.start()
+        }
+    }
+
+    @Volatile
+    private var isRoutingForForeignVpn = false
+
+    @Volatile
+    private var defaultNetworkHasVpn = false
+    private var foreignVpnMonitor: android.net.ConnectivityManager.NetworkCallback? = null
+    private var foreignVpnMonitorContext: Context? = null
+
+    fun onOwnVpnStateChanged() {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val appContext = foreignVpnMonitorContext ?: return@postDelayed
+            applyRoutingForForeignVpn(appContext, defaultNetworkHasVpn && !ByeDpiVpnService.isAlive)
+        }, OWN_VPN_SETTLE_MS)
+    }
+
+    @Synchronized
+    private fun applyRoutingForForeignVpn(context: Context, isForeignVpnActive: Boolean) {
+        if (isForeignVpnActive == isRoutingForForeignVpn) return
+        isRoutingForForeignVpn = isForeignVpnActive
+        if (isForeignVpnActive) {
+            Log.i("TgProxyController", "Активен сторонний VPN: TG-прокси идёт напрямую, без Cloudflare")
+            NativeProxy.setCfProxyConfig(false, false, "")
+        } else {
+            Log.i("TgProxyController", "Сторонний VPN отключён: возвращаю настройки Cloudflare")
+            NativeProxy.setCfProxyConfig(isCfEnabled(context), isCfPriority(context), "")
+        }
+    }
+
+    @Synchronized
+    private fun startForeignVpnMonitor(appContext: Context) {
+        if (foreignVpnMonitor != null) return
+        val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val monitor = object : android.net.ConnectivityManager.NetworkCallback() {
+            private var lastNetwork: android.net.Network? = null
+
+            override fun onAvailable(network: android.net.Network) {
+                val isVpnNetwork = connectivityManager.getNetworkCapabilities(network)
+                    ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+                if (isVpnNetwork) return
+                val previous = lastNetwork
+                lastNetwork = network
+                if (previous != null && previous != network) {
+                    Log.i("TgProxyController", "Сеть сменилась: сбрасываю пул заранее открытых соединений")
+                    NativeProxy.flushPools()
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+                defaultNetworkHasVpn = capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)
+                applyRoutingForForeignVpn(appContext, defaultNetworkHasVpn && !ByeDpiVpnService.isAlive)
+            }
+        }
+        try {
+            connectivityManager.registerDefaultNetworkCallback(monitor)
+            foreignVpnMonitor = monitor
+            foreignVpnMonitorContext = appContext
+        } catch (e: Exception) {
+            Log.w("TgProxyController", "Не удалось следить за сетью", e)
+        }
+    }
+
+    @Synchronized
+    private fun stopForeignVpnMonitor() {
+        val monitor = foreignVpnMonitor ?: return
+        val appContext = foreignVpnMonitorContext ?: return
+        val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        try {
+            connectivityManager.unregisterNetworkCallback(monitor)
+        } catch (_: Exception) {
+        }
+        foreignVpnMonitor = null
+        foreignVpnMonitorContext = null
+        isRoutingForForeignVpn = false
+        defaultNetworkHasVpn = false
     }
 
     fun stop() {
         Log.i("TgProxyController", "Остановка TG-прокси")
-        Thread {
+        isRunning = false
+        stopForeignVpnMonitor()
+        nativeExecutor.execute {
             try {
                 NativeProxy.stopProxy()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w("TgProxyController", "StopProxy failed", e)
             }
-        }.start()
+        }
     }
 }

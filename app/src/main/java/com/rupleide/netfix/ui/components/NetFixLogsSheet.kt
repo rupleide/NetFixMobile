@@ -239,7 +239,7 @@ fun NetFixLogsSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) {
                     detectTapGestures(onTap = { onDismissRequest() })
                 },
@@ -608,7 +608,7 @@ private fun LogsActionButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "btnBg"
     )
@@ -685,7 +685,7 @@ private fun LogsCloseButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "closeBg"
     )

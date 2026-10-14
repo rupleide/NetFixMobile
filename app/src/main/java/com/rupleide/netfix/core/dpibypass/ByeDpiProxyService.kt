@@ -215,7 +215,7 @@ class ByeDpiProxyService : LifecycleService() {
             }
         )
         intent.putExtra(SENDER, Sender.Proxy.ordinal)
-        sendBroadcast(intent)
+        sendBroadcast(intent.setPackage(packageName))
     }
 
     private fun createNotification(): Notification =

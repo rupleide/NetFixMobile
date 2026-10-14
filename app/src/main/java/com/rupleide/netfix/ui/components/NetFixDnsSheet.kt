@@ -237,7 +237,7 @@ fun NetFixDnsSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) {
                     detectTapGestures(onTap = { onDismissRequest() })
                 },
@@ -541,7 +541,9 @@ private fun DnsCustomScrollbar(
         val viewHeight = size.height
         if (totalEstimatedHeight <= viewHeight) return@Canvas
 
-        val thumbHeight = (viewHeight * viewHeight / totalEstimatedHeight).coerceIn(with(density) { 40.dp.toPx() }, viewHeight / 3)
+        val maxThumbHeight = viewHeight / 3
+        val minThumbHeight = minOf(with(density) { 40.dp.toPx() }, maxThumbHeight)
+        val thumbHeight = (viewHeight * viewHeight / totalEstimatedHeight).coerceIn(minThumbHeight, maxThumbHeight)
         val maxScroll = totalEstimatedHeight - viewHeight
         val firstItemOffset = state.firstVisibleItemScrollOffset
         val currentScrolled = (state.firstVisibleItemIndex.toFloat() * (itemHeight + spacing)) + firstItemOffset
@@ -586,7 +588,7 @@ private fun DnsOptionButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "dnsBg"
     )
@@ -672,7 +674,7 @@ private fun DnsCloseButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "closeBg"
     )

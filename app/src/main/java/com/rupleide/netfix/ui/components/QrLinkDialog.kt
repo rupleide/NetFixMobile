@@ -253,7 +253,7 @@ private fun QrActionButton(
     val finalActive = isPressed || isFocused
 
     val pressScale by animateFloatAsState(targetValue = if (isPressed) 0.98f else 1f, animationSpec = QrPressSpring, label = "press")
-    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF38383A) else QrCard, animationSpec = tween(150), label = "bg")
+    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF383838) else QrCard, animationSpec = tween(150), label = "bg")
     val borderColor by animateColorAsState(
         targetValue = when {
             isPressed -> Color.White

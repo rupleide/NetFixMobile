@@ -175,7 +175,7 @@ fun NetFixStrategySheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) { detectTapGestures(onTap = { onDismissRequest() }) },
             contentAlignment = if (useTvLayout) Alignment.Center else Alignment.BottomCenter
         ) {
@@ -360,7 +360,7 @@ private fun StrategyActionButton(
     val finalActive = isPressed || isFocused
 
     val pressScale by animateFloatAsState(targetValue = if (isPressed) 0.98f else 1f, animationSpec = YtPressSpring, label = "press")
-    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF38383A) else SheetCard, animationSpec = tween(150), label = "bg")
+    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF383838) else SheetCard, animationSpec = tween(150), label = "bg")
     val borderColor by animateColorAsState(
         targetValue = when {
             isPressed -> Color.White
@@ -439,7 +439,7 @@ private fun StrategyCloseButton(
     val finalActive = isPressed || isFocused
 
     val pressScale by animateFloatAsState(targetValue = if (isPressed) 0.97f else 1f, animationSpec = YtPressSpring, label = "cPress")
-    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF38383A) else SheetCard, animationSpec = tween(150), label = "cBg")
+    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF383838) else SheetCard, animationSpec = tween(150), label = "cBg")
     val borderColor by animateColorAsState(
         targetValue = when {
             isPressed -> Color.White

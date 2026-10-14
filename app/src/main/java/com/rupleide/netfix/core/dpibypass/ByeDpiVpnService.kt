@@ -48,10 +48,18 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
     companion object {
         private val TAG: String = ByeDpiVpnService::class.java.simpleName
-        private const val FOREGROUND_SERVICE_ID: Int = 1
+        private const val FOREGROUND_SERVICE_ID: Int = NETFIX_NOTIFICATION_ID
         private const val PAUSE_NOTIFICATION_ID: Int = 3
-        private const val NOTIFICATION_CHANNEL_ID: String = "ByeDPIVpn"
+        private const val NOTIFICATION_CHANNEL_ID: String = NETFIX_NOTIFICATION_CHANNEL_ID
         private var status: ServiceStatus = ServiceStatus.Disconnected
+        private const val DEFAULT_TUNNEL_DNS = "1.1.1.1"
+
+        val isConnected: Boolean
+            get() = status == ServiceStatus.Connected
+
+        @Volatile
+        var isAlive: Boolean = false
+            private set
     }
 
     private fun acquireWakeLock() {
@@ -62,6 +70,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        isAlive = true
         registerNotificationChannel(
             this,
             NOTIFICATION_CHANNEL_ID,
@@ -80,6 +89,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                         lifecycleScope.launch {
                             mutex.withLock {
                                 try {
+                                    switchStrategyForCurrentNetwork()
                                     stopProxy()
                                     stopTun2Socks()
                                     startProxy()
@@ -108,6 +118,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isAlive = false
+        com.rupleide.netfix.core.tgproxy.TgProxyController.onOwnVpnStateChanged()
         networkCallback?.let {
             val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
             try {
@@ -116,13 +128,6 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
         tunFd?.close()
         releaseWakeLock()
-        val prefs = getSharedPreferences(packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-        if (prefs.getBoolean("service_enabled", false)) {
-            val intent = Intent(this, com.rupleide.netfix.service.WatchdogReceiver::class.java).apply {
-                action = "com.rupleide.netfix.action.RESTART_SERVICE"
-            }
-            sendBroadcast(intent)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -135,7 +140,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 lifecycleScope.launch {
                     start()
                 }
-                START_STICKY
+                START_NOT_STICKY
             }
 
             STOP_ACTION -> {
@@ -155,14 +160,14 @@ class ByeDpiVpnService : LifecycleVpnService() {
                         start()
                     }
                 }
-                START_STICKY
+                START_NOT_STICKY
             }
 
             PAUSE_ACTION -> {
                 lifecycleScope.launch {
                     pause()
                 }
-                START_STICKY
+                START_NOT_STICKY
             }
 
             SERVICE_INTERFACE -> {
@@ -172,11 +177,14 @@ class ByeDpiVpnService : LifecycleVpnService() {
                     start()
                 }
 
-                START_STICKY
+                START_NOT_STICKY
             }
 
             else -> {
                 Log.w(TAG, "Unknown action: $action")
+                lifecycleScope.launch {
+                    stop()
+                }
                 START_NOT_STICKY
             }
         }
@@ -184,7 +192,23 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
     override fun onRevoke() {
         Log.i(TAG, "VPN revoked")
+        val tgRunning = com.rupleide.netfix.core.tgproxy.TgProxyController.isRunning
+        if (tgRunning) {
+            com.rupleide.netfix.core.tgproxy.TgProxyService.startInForeground(this, openTelegram = false, proxyOnly = true)
+        }
+        com.rupleide.netfix.core.tgproxy.TgProxyReminder.notifyVpnReplaced(this, tgRunning)
+        getSharedPreferences(packageName + "_preferences", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("service_enabled", false)
+            .apply()
         lifecycleScope.launch { stop() }
+    }
+
+    private fun switchStrategyForCurrentNetwork() {
+        if (applyStrategyForCurrentNetwork()) {
+            val kind = currentNetworkKind()
+            Log.i(TAG, "Сеть: ${kind?.displayName}, применяю сохранённую для неё стратегию")
+        }
     }
 
     private suspend fun start() {
@@ -192,6 +216,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(PAUSE_NOTIFICATION_ID)
+        com.rupleide.netfix.core.tgproxy.TgProxyReminder.clearVpnReplaced(this)
 
         if (status == ServiceStatus.Connected) {
             Log.w(TAG, "VPN already connected")
@@ -207,6 +232,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 com.rupleide.netfix.service.WatchdogWorker.schedulePeriodicWork(this)
             }
             mutex.withLock {
+                switchStrategyForCurrentNetwork()
                 startProxy()
                 startTun2Socks()
                 updateStatus(ServiceStatus.Connected)
@@ -257,7 +283,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
             NOTIFICATION_CHANNEL_ID,
             R.string.notification_title,
             R.string.service_paused_text,
-            ByeDpiVpnService::class.java
+            ByeDpiVpnService::class.java,
+            createStopAllPendingIntent(this)
         )
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(FOREGROUND_SERVICE_ID, pausedNotification)
@@ -362,23 +389,12 @@ class ByeDpiVpnService : LifecycleVpnService() {
         val sharedPreferences = getPreferences()
         val (ip, port) = sharedPreferences.getProxyIpAndPort()
 
-        val customDnsPreset = sharedPreferences.getString("custom_dns_preset", "Стандартный (Отключено)") ?: "Стандартный (Отключено)"
-        val dnsIps: List<String> = when (customDnsPreset) {
-            "Cloudflare Secure DNS" -> listOf("1.1.1.1", "1.0.0.1")
-            "Google Public DNS" -> listOf("8.8.8.8", "8.8.4.4")
-            "AdGuard DNS (Блокировка рекламы)" -> listOf("94.140.14.14", "94.140.15.15")
-            "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)" -> listOf("176.99.11.11", "176.99.11.22")
-            "Supercell Xbox DNS (supercell.xbox-dns.ru)" -> listOf("176.99.11.11", "176.99.11.22")
-            "NullsProxy DNS (dns.nullsproxy.com)" -> listOf("176.99.11.11", "176.99.11.22")
-            "Comss.one DNS (dns.comss.one)" -> listOf("76.76.2.22", "76.76.10.22")
-            "Geohide DNS (dns.geohide.ru)" -> listOf("176.99.11.11", "176.99.11.22")
-            else -> emptyList()
-        }
+        val dnsIps = resolveTunnelDnsServers()
         val ipv6 = sharedPreferences.getBoolean("ipv6_enable", false)
 
         val tun2socksConfig = buildString {
             appendLine("tunnel:")
-            appendLine("  mtu: 1500")
+            appendLine("  mtu: 8500")
 
             appendLine("misc:")
             appendLine("  task-stack-size: 81920")
@@ -400,7 +416,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         val isSmartTv = sharedPreferences.getBoolean("is_smart_tv", false)
 
-        val fd = createBuilder(emptyList(), ipv6, isSmartTv).establish()
+        val fd = createBuilder(dnsIps, ipv6).establish()
             ?: throw IllegalStateException("VPN connection failed")
 
         this.tunFd = fd
@@ -470,17 +486,11 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
         )
         intent.putExtra(SENDER, Sender.VPN.ordinal)
-        sendBroadcast(intent)
+        com.rupleide.netfix.service.NetFixTileService.requestRefresh(this)
+        sendBroadcast(intent.setPackage(packageName))
     }
 
-    private fun createNotification(): Notification =
-        createConnectionNotification(
-            this,
-            NOTIFICATION_CHANNEL_ID,
-            R.string.notification_title,
-            R.string.vpn_notification_content,
-            ByeDpiVpnService::class.java
-        )
+    private fun createNotification(): Notification = createNetFixNotification(this)
 
     private fun createNotificationPause() {
         val notification = createPauseNotification(
@@ -495,11 +505,27 @@ class ByeDpiVpnService : LifecycleVpnService() {
         notificationManager.notify(PAUSE_NOTIFICATION_ID, notification)
     }
 
-    private fun createBuilder(dnsIps: List<String>, ipv6: Boolean, isSmartTv: Boolean): Builder {
+    private fun resolveTunnelDnsServers(): List<String> {
+        val isPrivateDnsConfigured = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val activeNetwork = connectivityManager.activeNetwork
+                val linkProperties = activeNetwork?.let { connectivityManager.getLinkProperties(it) }
+                !linkProperties?.privateDnsServerName.isNullOrBlank()
+            } catch (e: SecurityException) {
+                false
+            }
+        } else {
+            false
+        }
+        return if (isPrivateDnsConfigured) emptyList() else listOf(DEFAULT_TUNNEL_DNS)
+    }
+
+    private fun createBuilder(dnsIps: List<String>, ipv6: Boolean): Builder {
         Log.d(TAG, "DNS: $dnsIps")
         val builder = Builder()
         val preferences = getPreferences()
-        builder.setSession("ByeDPI")
+        builder.setSession("NetFix")
         builder.setConfigureIntent(
             PendingIntent.getActivity(
                 this,
@@ -511,17 +537,10 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         builder.addAddress("10.10.10.10", 32)
             .addRoute("0.0.0.0", 0)
-            .setMtu(1500)
 
         if (ipv6) {
             builder.addAddress("fd00::1", 128)
                 .addRoute("::", 0)
-        } else if (isSmartTv) {
-            try {
-                builder.addAddress("fd00::1", 128)
-                    .addRoute("::", 0)
-            } catch (e: Exception) {
-            }
         }
 
         dnsIps.forEach { ip ->
@@ -532,44 +551,18 @@ class ByeDpiVpnService : LifecycleVpnService() {
             builder.setMetered(false)
         }
 
-        val defaultPkgs = setOf(
-            "org.smarttube.stable",
-            "org.smarttube.beta",
-            "com.google.android.youtube",
-            "com.google.android.youtube.tv",
-            "com.liskovsoft.videomanager.v2",
-            "com.liskovsoft.smarttubetv.beta",
-            "com.teamsmart.videomanager.tv",
-            "app.revanced.android.youtube",
-            "com.google.android.apps.youtube.music",
-            "com.google.android.apps.youtube.kids",
-            "org.schabi.newpipe",
-            "org.schabi.newpipe.legacy",
-            "com.kapp.youtube",
-            "com.bg.vanced",
-            "com.libretube",
-            "com.liskovsoft.smarttubetv"
-        )
-        val selectedApps = preferences.getStringSet("selected_apps", null)
-        val listedApps = if (selectedApps == null) {
-            preferences.edit().putStringSet("selected_apps", defaultPkgs).apply()
-            defaultPkgs
-        } else {
-            val missing = defaultPkgs.filter { it !in selectedApps }
-            if (missing.isNotEmpty()) {
-                val updated = selectedApps + defaultPkgs
-                preferences.edit().putStringSet("selected_apps", updated).apply()
-                updated
-            } else {
-                selectedApps
+        when (preferences.appListMode()) {
+            AppListMode.SelectedAppsOnly -> {
+                for (packageName in preferences.selectedAppsWithDefaults()) {
+                    try {
+                        builder.addAllowedApplication(packageName)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to whitelist app $packageName", e)
+                    }
+                }
             }
-        }
-
-        for (packageName in listedApps) {
-            try {
-                builder.addAllowedApplication(packageName)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to whitelist app $packageName", e)
+            AppListMode.AllTraffic -> {
+                builder.addDisallowedApplication(applicationContext.packageName)
             }
         }
 

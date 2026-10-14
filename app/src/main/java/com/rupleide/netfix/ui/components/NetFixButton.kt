@@ -32,9 +32,10 @@ fun NetFixButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     iconRes: Int? = null,
-    backgroundColor: Color = Color(0xFF242426),
-    highlightedColor: Color = Color(0xFF38383A)
+    backgroundColor: Color = Color(0xFF242424),
+    highlightedColor: Color = Color(0xFF383838)
 ) {
+    val haptics = rememberNetFixHaptics()
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val isHovered by interactionSource.collectIsHoveredAsState()
@@ -66,7 +67,10 @@ fun NetFixButton(
                 if (enabled) Modifier.clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = onClick
+                    onClick = {
+                        haptics(NetFixHaptic.Tap)
+                        onClick()
+                    }
                 ) else Modifier
             )
             .padding(vertical = 14.dp),

@@ -1,5 +1,6 @@
 package com.rupleide.netfix.ui.components
 
+import androidx.compose.foundation.layout.imePadding
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
@@ -126,6 +127,8 @@ fun NetFixAppsSheet(
     val frozenNavBarPadding = remember { navBarPaddingValues }
 
     val transition = updateTransition(targetState = visible, label = "AppsSheetTransition")
+    val selectionAtOpen = remember(visible) { selectedApps }
+    val hasChanges = selectedApps != selectionAtOpen
 
     val closeFocusRequester = remember { FocusRequester() }
     val firstItemFocusRequester = remember { FocusRequester() }
@@ -251,7 +254,7 @@ fun NetFixAppsSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) {
                     detectTapGestures(onTap = { onDismissRequest() })
                 },
@@ -260,6 +263,7 @@ fun NetFixAppsSheet(
             Box(
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
+                    .imePadding()
                     .padding(frozenNavBarPadding)
                     .padding(bottom = if (useTvLayout) 0.dp else 16.dp)
                     .widthIn(max = if (useTvLayout) 680.dp else 500.dp)
@@ -358,6 +362,7 @@ fun NetFixAppsSheet(
                             AppsCloseButton(
                                 label = closeLabel,
                                 focusRequester = closeFocusRequester,
+                                hasChanges = hasChanges,
                                 onClick = onDismissRequest
                             )
                         }
@@ -647,6 +652,7 @@ fun NetFixAppsSheet(
                             AppsCloseButton(
                                 label = closeLabel,
                                 focusRequester = closeFocusRequester,
+                                hasChanges = hasChanges,
                                 onClick = onDismissRequest
                             )
                         }
@@ -673,7 +679,9 @@ private fun AppsCustomScrollbar(
         val viewHeight = size.height
         if (totalEstimatedHeight <= viewHeight) return@Canvas
 
-        val thumbHeight = (viewHeight * viewHeight / totalEstimatedHeight).coerceIn(with(density) { 40.dp.toPx() }, viewHeight / 3)
+        val maxThumbHeight = viewHeight / 3
+        val minThumbHeight = minOf(with(density) { 40.dp.toPx() }, maxThumbHeight)
+        val thumbHeight = (viewHeight * viewHeight / totalEstimatedHeight).coerceIn(minThumbHeight, maxThumbHeight)
         val maxScroll = totalEstimatedHeight - viewHeight
         val firstItemOffset = state.firstVisibleItemScrollOffset
         val currentScrolled = (state.firstVisibleItemIndex.toFloat() * (itemHeight + spacing)) + firstItemOffset
@@ -766,7 +774,7 @@ private fun AppOptionButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "appBg"
     )
@@ -859,6 +867,7 @@ private fun AppOptionButton(
 private fun AppsCloseButton(
     label: String,
     focusRequester: FocusRequester,
+    hasChanges: Boolean = false,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -875,7 +884,7 @@ private fun AppsCloseButton(
     )
 
     val currentBgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else ButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else ButtonBackground,
         animationSpec = tween(150),
         label = "closeBg"
     )
@@ -887,6 +896,12 @@ private fun AppsCloseButton(
         },
         animationSpec = tween(150),
         label = "closeBorder"
+    )
+
+    val closeLabelColor by animateColorAsState(
+        targetValue = if (finalActive || hasChanges) Color.White else CloseText,
+        animationSpec = tween(200),
+        label = "closeLabel"
     )
 
     Box(
@@ -925,7 +940,7 @@ private fun AppsCloseButton(
     ) {
         Text(
             text = label,
-            color = if (finalActive) Color.White else CloseText,
+            color = closeLabelColor,
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold
         )

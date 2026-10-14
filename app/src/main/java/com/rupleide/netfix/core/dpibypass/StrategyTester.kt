@@ -3,8 +3,14 @@ package com.rupleide.netfix.core.dpibypass
 import android.content.Context
 import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -14,7 +20,128 @@ import java.net.URL
 
 class StrategyTester(private val context: Context) {
     companion object {
-        const val YOUTUBE_SNI_DOMAINS = "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com"
+        private const val SNI_PLACEHOLDER = "{sni}"
+        private const val SNI_IDENTITY_KEY = "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com"
+
+        private const val FAKE_SNI_DOMAIN = "google.com"
+
+        private val legacyExpandedFakeSniFlags = listOf(
+            "youtube.com",
+            "music.youtube.com",
+            "googlevideo.com",
+            "ytimg.com",
+            "ggpht.com",
+            "google.com",
+            "youtubei.googleapis.com",
+            "googleapis.com"
+        ).joinToString(" ") { "-n $it" }
+
+        private const val PROXY_READY_TIMEOUT_MS = 1_500L
+        private const val PROXY_READY_POLL_MS = 50L
+        private const val PAUSE_BETWEEN_STRATEGIES_MS = 150L
+        private const val QUICK_SITE_TIMEOUT_MS = 3_000
+        private const val FULL_SITE_TIMEOUT_MS = 5_000
+        private const val MAX_PARALLEL_SITE_CHECKS = 30
+        private const val FINALIST_COUNT = 5
+        private const val MAX_BODY_BYTES_WITHOUT_LENGTH = 1024L * 1024L
+        const val FAILED_STATUS = "тайм-аут"
+
+        private val QUICK_SITES = listOf(
+            "youtube.com",
+            "i.ytimg.com",
+            "yt3.ggpht.com",
+            "youtubei.googleapis.com",
+            "manifest.googlevideo.com",
+            "rr1---sn-4axm-n8vs.googlevideo.com",
+            "rr4---sn-q4flrnsl.googlevideo.com",
+            "rr2---sn-q4fl6ndl.googlevideo.com",
+            "discord.com",
+            "gateway.discord.gg",
+            "cdn.discordapp.com"
+        )
+
+        val TEST_SITES = listOf(
+            "youtu.be",
+            "youtube.com",
+            "i.ytimg.com",
+            "i9.ytimg.com",
+            "yt3.ggpht.com",
+            "yt4.ggpht.com",
+            "googleapis.com",
+            "jnn-pa.googleapis.com",
+            "googleusercontent.com",
+            "signaler-pa.youtube.com",
+            "youtubei.googleapis.com",
+            "manifest.googlevideo.com",
+            "yt3.googleusercontent.com",
+            "rr1---sn-4axm-n8vs.googlevideo.com",
+            "rr1---sn-gvnuxaxjvh-o8ge.googlevideo.com",
+            "rr1---sn-ug5onuxaxjvh-p3ul.googlevideo.com",
+            "rr1---sn-ug5onuxaxjvh-n8v6.googlevideo.com",
+            "rr4---sn-q4flrnsl.googlevideo.com",
+            "rr10---sn-gvnuxaxjvh-304z.googlevideo.com",
+            "rr14---sn-n8v7kn7r.googlevideo.com",
+            "rr16---sn-axq7sn76.googlevideo.com",
+            "rr1---sn-8ph2xajvh-5xge.googlevideo.com",
+            "rr1---sn-gvnuxaxjvh-5gie.googlevideo.com",
+            "rr12---sn-gvnuxaxjvh-bvwz.googlevideo.com",
+            "rr5---sn-n8v7knez.googlevideo.com",
+            "rr1---sn-u5uuxaxjvhg0-ocje.googlevideo.com",
+            "rr2---sn-q4fl6ndl.googlevideo.com",
+            "rr5---sn-gvnuxaxjvh-n8vk.googlevideo.com",
+            "rr4---sn-jvhnu5g-c35d.googlevideo.com",
+            "rr1---sn-q4fl6n6y.googlevideo.com",
+            "rr2---sn-hgn7ynek.googlevideo.com",
+            "rr1---sn-xguxaxjvh-gufl.googlevideo.com",
+            "discord.com",
+            "gateway.discord.gg",
+            "cdn.discordapp.com",
+            "media.discordapp.net",
+            "discordapp.com",
+            "dl.discordapp.net"
+        )
+
+        val YOUTUBE_PROBE_HOSTS = listOf(
+            "youtube.com",
+            "i.ytimg.com",
+            "yt3.ggpht.com",
+            "youtubei.googleapis.com",
+            "manifest.googlevideo.com",
+            "rr1---sn-4axm-n8vs.googlevideo.com"
+        )
+
+        val DISCORD_PROBE_HOSTS = listOf(
+            "discord.com",
+            "gateway.discord.gg",
+            "cdn.discordapp.com",
+            "media.discordapp.net",
+            "discordapp.com",
+            "dl.discordapp.net"
+        )
+
+        private val passedSitesPattern = Regex("""^(\d+)/(\d+)$""")
+
+        fun successScore(status: String): Double? {
+            if (status.contains("мс")) return 1.0
+            val match = passedSitesPattern.find(status.trim()) ?: return null
+            val passedSites = match.groupValues[1].toIntOrNull() ?: return null
+            val totalSites = match.groupValues[2].toIntOrNull() ?: return null
+            if (passedSites == 0 || totalSites == 0) return null
+            return passedSites.toDouble() / totalSites
+        }
+
+        fun isSuccessfulStatus(status: String): Boolean = successScore(status) != null
+
+        fun normalizeStrategy(strategy: String): String =
+            strategy.replace(SNI_PLACEHOLDER, SNI_IDENTITY_KEY)
+
+        fun collapseFakeSniDomains(command: String): String =
+            command
+                .replace(legacyExpandedFakeSniFlags, "-n $SNI_PLACEHOLDER")
+                .replace(SNI_IDENTITY_KEY, SNI_PLACEHOLDER)
+
+        fun buildRunnableCommand(strategy: String): String =
+            normalizeStrategy(strategy).replace(SNI_IDENTITY_KEY, FAKE_SNI_DOMAIN)
 
         val defaultStrategies = listOf(
             "-o1 -d1 -a1 -At,r,s -s1 -d1 -s5+s -s10+s -s15+s -s20+s -r1+s -S -a1 -As -s1 -d1 -s5+s -s10+s -s15+s -s20+s -S -a1",
@@ -94,11 +221,11 @@ class StrategyTester(private val context: Context) {
     }
 
     suspend fun runTests(
-        onProgress: (Int, String, String) -> Unit
+        strategies: List<String> = defaultStrategies,
+        shouldStopQuickPhase: () -> Boolean = { false },
+        onFinalPhase: (finalistCount: Int) -> Unit = {},
+        onProgress: (index: Int, strategy: String, status: String, isFinalCheck: Boolean) -> Unit
     ): String? = withContext(Dispatchers.IO) {
-        var bestStrategy: String? = null
-        var minPing = Long.MAX_VALUE
-
         val wasRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
         if (wasRunning) {
             ServiceManager.stop(context)
@@ -109,58 +236,200 @@ class StrategyTester(private val context: Context) {
             }
         }
 
-        val testPort = 1082
-        val testUrl = "https://www.youtube.com"
-
-        for (i in defaultStrategies.indices) {
-            if (!isActive) break
-
-            val strategy = defaultStrategies[i]
-            Log.i("StrategyTester", "Проверка стратегии №${i + 1}: \"$strategy\"")
-            val cleanCmd = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
-            val prefix = "--ip 127.0.0.1 --port $testPort "
-            val splitArgs = shellSplit("$prefix$cleanCmd").filter { it !in setOf("--help", "--version", "-h", "-v") }
-            val args = (listOf("ciadpi") + splitArgs).toTypedArray()
-
-            val proxy = ByeDpiProxy()
-            val activeJob = launch(Dispatchers.IO) {
-                proxy.startProxy(ByeDpiProxyCmdPreferences(args))
+        val quickPassedSites = IntArray(strategies.size)
+        for (i in strategies.indices) {
+            if (!isActive || shouldStopQuickPhase()) break
+            val strategy = strategies[i]
+            Log.i("StrategyTester", "Быстрая проверка стратегии №${i + 1}: \"$strategy\"")
+            val passedSites = runWithStrategy(strategy, 0) { port ->
+                countFullyReachableSites(QUICK_SITES, port, QUICK_SITE_TIMEOUT_MS)
             }
+            quickPassedSites[i] = passedSites
+            val statusText = if (passedSites > 0) "$passedSites/${QUICK_SITES.size}" else FAILED_STATUS
+            Log.i("StrategyTester", "Быстрый результат стратегии №${i + 1}: $statusText")
+            onProgress(i, strategy, statusText, false)
+        }
 
-            delay(600)
+        val stoppedEarly = shouldStopQuickPhase()
+        val finalistIndices = if (stoppedEarly) {
+            emptyList()
+        } else {
+            strategies.indices
+                .filter { quickPassedSites[it] > 0 }
+                .sortedByDescending { quickPassedSites[it] }
+                .take(FINALIST_COUNT)
+        }
 
-            var success = false
-            var ping = 0L
-
-            try {
-                val startTime = System.currentTimeMillis()
-                val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", testPort))
-                val connection = URL(testUrl).openConnection(socksProxy) as HttpURLConnection
-                connection.connectTimeout = 2000
-                connection.readTimeout = 2000
-                connection.setRequestProperty("Connection", "close")
-                val responseCode = connection.responseCode
-                if (responseCode in 200..399) {
-                    ping = System.currentTimeMillis() - startTime
-                    success = true
-                }
-                connection.disconnect()
-            } catch (_: Exception) {
+        var bestStrategy: String? = null
+        var bestFullPassedSites = 0
+        if (finalistIndices.isNotEmpty()) onFinalPhase(finalistIndices.size)
+        for (index in finalistIndices) {
+            if (!isActive || shouldStopQuickPhase()) break
+            val strategy = strategies[index]
+            Log.i("StrategyTester", "Полная проверка стратегии №${index + 1}")
+            val passedSites = runWithStrategy(strategy, 0) { port ->
+                countFullyReachableSites(TEST_SITES, port, FULL_SITE_TIMEOUT_MS)
             }
-
-            proxy.stopProxy()
-            activeJob.join()
-
-            val statusText = if (success) "${ping} мс" else "тайм-аут"
-            Log.i("StrategyTester", "Результат стратегии №${i + 1}: $statusText")
-            onProgress(i, strategy, statusText)
-
-            if (success && ping < minPing) {
-                minPing = ping
+            val statusText = if (passedSites > 0) "$passedSites/${TEST_SITES.size}" else FAILED_STATUS
+            Log.i("StrategyTester", "Итог стратегии №${index + 1}: $statusText")
+            onProgress(index, strategy, statusText, true)
+            if (passedSites > bestFullPassedSites) {
+                bestFullPassedSites = passedSites
                 bestStrategy = strategy
             }
         }
 
+        if (bestStrategy == null && shouldStopQuickPhase()) {
+            val bestQuickIndex = strategies.indices
+                .filter { quickPassedSites[it] > 0 }
+                .maxByOrNull { quickPassedSites[it] }
+            bestStrategy = bestQuickIndex?.let { strategies[it] }
+        }
+
         bestStrategy
+    }
+
+    private suspend fun <T> runWithStrategy(strategy: String, fallback: T, check: suspend (Int) -> T): T = coroutineScope {
+        val testPort = 1082
+        val cleanCmd = buildRunnableCommand(strategy)
+        val prefix = "--ip 127.0.0.1 --port $testPort "
+        val splitArgs = shellSplit("$prefix$cleanCmd").filter { it !in setOf("--help", "--version", "-h", "-v") }
+        val args = (listOf("ciadpi") + splitArgs).toTypedArray()
+
+        val proxy = ByeDpiProxy()
+        val proxyJob = launch(Dispatchers.IO) {
+            proxy.startProxy(ByeDpiProxyCmdPreferences(args))
+        }
+
+        try {
+            if (waitForProxyPort(testPort)) check(testPort) else fallback
+        } finally {
+            withContext(NonCancellable) {
+                proxy.stopProxy()
+                proxyJob.join()
+                delay(PAUSE_BETWEEN_STRATEGIES_MS)
+            }
+        }
+    }
+
+    data class StrategyProbeResult(
+        val youtubeOk: Int,
+        val youtubeTotal: Int,
+        val discordOk: Int,
+        val discordTotal: Int,
+        val averageMs: Long
+    )
+
+    suspend fun stopRunningVpnForTests(): Boolean = withContext(Dispatchers.IO) {
+        val wasRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
+        if (wasRunning) {
+            ServiceManager.stop(context)
+            var attempts = 0
+            while (com.rupleide.netfix.data.appStatus.first != com.rupleide.netfix.data.AppStatus.Halted && attempts < 30) {
+                delay(100)
+                attempts++
+            }
+        }
+        wasRunning
+    }
+
+    suspend fun probeStrategy(strategy: String): StrategyProbeResult = withContext(Dispatchers.IO) {
+        val empty = StrategyProbeResult(0, YOUTUBE_PROBE_HOSTS.size, 0, DISCORD_PROBE_HOSTS.size, -1L)
+        runWithStrategy(strategy, empty) { port ->
+            coroutineScope {
+                val hosts = YOUTUBE_PROBE_HOSTS + DISCORD_PROBE_HOSTS
+                val times = hosts.map { host -> async(Dispatchers.IO) { timedReachability(host, port) } }.awaitAll()
+                val youtubeTimes = times.take(YOUTUBE_PROBE_HOSTS.size)
+                val discordTimes = times.drop(YOUTUBE_PROBE_HOSTS.size)
+                val okTimes = (youtubeTimes + discordTimes).filter { it >= 0 }
+                StrategyProbeResult(
+                    youtubeOk = youtubeTimes.count { it >= 0 },
+                    youtubeTotal = youtubeTimes.size,
+                    discordOk = discordTimes.count { it >= 0 },
+                    discordTotal = discordTimes.size,
+                    averageMs = if (okTimes.isEmpty()) -1L else okTimes.average().toLong()
+                )
+            }
+        }
+    }
+
+    private fun timedReachability(host: String, port: Int, timeoutMs: Int = FULL_SITE_TIMEOUT_MS): Long {
+        val started = System.currentTimeMillis()
+        return if (isSiteFullyReachable(host, port, timeoutMs)) System.currentTimeMillis() - started else -1L
+    }
+
+    private suspend fun waitForProxyPort(port: Int): Boolean {
+        val deadline = System.currentTimeMillis() + PROXY_READY_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            val isListening = try {
+                java.net.Socket().use { socket ->
+                    socket.connect(InetSocketAddress("127.0.0.1", port), 100)
+                    true
+                }
+            } catch (_: Exception) {
+                false
+            }
+            if (isListening) return true
+            delay(PROXY_READY_POLL_MS)
+        }
+        return false
+    }
+
+    private suspend fun countFullyReachableSites(sites: List<String>, proxyPort: Int, timeoutMs: Int): Int = coroutineScope {
+        val parallelChecks = Semaphore(MAX_PARALLEL_SITE_CHECKS)
+        sites.map { site ->
+            async(Dispatchers.IO) {
+                parallelChecks.withPermit { isSiteFullyReachable(site, proxyPort, timeoutMs) }
+            }
+        }.awaitAll().count { it }
+    }
+
+    private val activeConnections: MutableSet<HttpURLConnection> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<HttpURLConnection, Boolean>())
+
+    fun abortActiveChecks() {
+        activeConnections.toList().forEach { connection ->
+            try {
+                connection.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun isSiteFullyReachable(site: String, proxyPort: Int, timeoutMs: Int): Boolean {
+        val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", proxyPort))
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = URL("https://$site").openConnection(socksProxy) as HttpURLConnection
+            activeConnections.add(connection)
+            connection.connectTimeout = timeoutMs
+            connection.readTimeout = timeoutMs
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("Connection", "close")
+
+            val responseCode = connection.responseCode
+            val declaredLength = connection.contentLengthLong
+            val readLimit = if (declaredLength > 0) declaredLength else MAX_BODY_BYTES_WITHOUT_LENGTH
+            var receivedLength = 0L
+            try {
+                val body = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                if (body != null) {
+                    val buffer = ByteArray(8192)
+                    while (receivedLength < readLimit) {
+                        val bytesToRead = minOf(buffer.size.toLong(), readLimit - receivedLength).toInt()
+                        val bytesRead = body.read(buffer, 0, bytesToRead)
+                        if (bytesRead == -1) break
+                        receivedLength += bytesRead
+                    }
+                }
+            } catch (_: java.io.IOException) {
+            }
+            declaredLength <= 0L || receivedLength >= declaredLength
+        } catch (_: Exception) {
+            false
+        } finally {
+            connection?.let { activeConnections.remove(it) }
+            connection?.disconnect()
+        }
     }
 }

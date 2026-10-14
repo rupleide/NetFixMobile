@@ -12,6 +12,7 @@ import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import com.rupleide.netfix.R
 import com.rupleide.netfix.MainActivity
+import com.rupleide.netfix.core.tgproxy.TgProxyService
 import com.rupleide.netfix.data.Mode
 import com.rupleide.netfix.data.PAUSE_ACTION
 import com.rupleide.netfix.data.RESUME_ACTION
@@ -127,6 +128,207 @@ fun shellSplit(string: CharSequence): List<String> {
     return tokens
 }
 
+private val connectionArgsWithValue = setOf("-i", "--ip", "-p", "--port")
+private val connectionArgPrefixes = listOf("-i", "-p")
+
+fun sanitizePastedByeDpiCommand(raw: String): String {
+    val tokens = shellSplit(raw.replace('\n', ' ').trim()).toMutableList()
+    if (tokens.firstOrNull()?.endsWith("ciadpi") == true) tokens.removeAt(0)
+    val keptTokens = mutableListOf<String>()
+    var skipNextValue = false
+    for (token in tokens) {
+        when {
+            skipNextValue -> skipNextValue = false
+            token in connectionArgsWithValue -> skipNextValue = true
+            token.startsWith("--ip=") || token.startsWith("--port=") -> Unit
+            connectionArgPrefixes.any { token.startsWith(it) && token.length > 2 && !token.startsWith("--") } -> Unit
+            else -> keptTokens.add(if (token.contains(' ')) "\"$token\"" else token)
+        }
+    }
+    return keptTokens.joinToString(" ")
+}
+
+enum class AppListMode { AllTraffic, SelectedAppsOnly }
+
+const val APP_LIST_TYPE_KEY: String = "applist_type"
+private const val APP_LIST_TYPE_ALL_TRAFFIC = "disable"
+private const val APP_LIST_TYPE_SELECTED_ONLY = "whitelist"
+
+val defaultYoutubeApps: Set<String> = setOf(
+    "org.smarttube.stable",
+    "org.smarttube.beta",
+    "com.google.android.youtube",
+    "com.google.android.youtube.tv",
+    "com.liskovsoft.videomanager.v2",
+    "com.liskovsoft.smarttubetv.beta",
+    "com.teamsmart.videomanager.tv",
+    "app.revanced.android.youtube",
+    "com.google.android.apps.youtube.music",
+    "com.google.android.apps.youtube.kids",
+    "org.schabi.newpipe",
+    "org.schabi.newpipe.legacy",
+    "com.kapp.youtube",
+    "com.bg.vanced",
+    "com.libretube",
+    "com.liskovsoft.smarttubetv"
+)
+
+val extraBypassApps: Set<String> = setOf(
+    "com.discord",
+    "com.twitter.android",
+    "com.instagram.android",
+    "com.instagram.barcelona",
+    "com.facebook.katana",
+    "com.facebook.orca",
+    "com.linkedin.android",
+    "com.reddit.frontpage",
+    "com.viber.voip",
+    "org.thoughtcrime.securesms",
+    "com.whatsapp",
+    "com.whatsapp.w4b",
+    "tv.twitch.android.app",
+    "com.spotify.music",
+    "com.snapchat.android",
+    "com.pinterest"
+)
+
+private const val APPS_DEFAULTS_VERSION_KEY = "apps_defaults_version"
+private const val APPS_DEFAULTS_VERSION = 3
+
+fun android.content.pm.PackageManager.launchIntentWithLeanback(packageName: String): Intent? =
+    getLaunchIntentForPackage(packageName) ?: getLeanbackLaunchIntentForPackage(packageName)
+
+fun SharedPreferences.appListMode(): AppListMode =
+    when (getString(APP_LIST_TYPE_KEY, APP_LIST_TYPE_SELECTED_ONLY)) {
+        APP_LIST_TYPE_ALL_TRAFFIC -> AppListMode.AllTraffic
+        else -> AppListMode.SelectedAppsOnly
+    }
+
+fun SharedPreferences.setAppListMode(mode: AppListMode) {
+    val storedValue = when (mode) {
+        AppListMode.AllTraffic -> APP_LIST_TYPE_ALL_TRAFFIC
+        AppListMode.SelectedAppsOnly -> APP_LIST_TYPE_SELECTED_ONLY
+    }
+    edit().putString(APP_LIST_TYPE_KEY, storedValue).apply()
+}
+
+fun SharedPreferences.selectedAppsWithDefaults(): Set<String> {
+    val storedApps = getStringSet("selected_apps", null)
+    if (storedApps != null) {
+        if (getInt(APPS_DEFAULTS_VERSION_KEY, 0) >= APPS_DEFAULTS_VERSION) return storedApps
+        val migrated = storedApps + extraBypassApps
+        edit().putStringSet("selected_apps", migrated).putInt(APPS_DEFAULTS_VERSION_KEY, APPS_DEFAULTS_VERSION).apply()
+        return migrated
+    }
+    val initial = defaultYoutubeApps + extraBypassApps
+    edit().putStringSet("selected_apps", initial).putInt(APPS_DEFAULTS_VERSION_KEY, APPS_DEFAULTS_VERSION).apply()
+    return initial
+}
+
+const val ACTIVE_STRATEGY_KEY: String = "byedpi_cmd_args"
+
+enum class NetworkKind(val preferenceSuffix: String, val displayName: String) {
+    Wifi("wifi", "Wi-Fi"),
+    Mobile("mobile", "Мобильная сеть")
+}
+
+private fun networkKindOf(capabilities: android.net.NetworkCapabilities): NetworkKind? = when {
+    capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkKind.Wifi
+    capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkKind.Mobile
+    else -> null
+}
+
+fun Context.currentNetworkKind(): NetworkKind? {
+    val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+    return try {
+        val activeCapabilities = connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork)
+        val direct = activeCapabilities?.let { networkKindOf(it) }
+        if (direct != null) return direct
+        val physical = connectivityManager.allNetworks.mapNotNull { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+            if (!capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)) return@mapNotNull null
+            if (!capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return@mapNotNull null
+            networkKindOf(capabilities)
+        }
+        physical.firstOrNull { it == NetworkKind.Wifi } ?: physical.firstOrNull()
+    } catch (_: SecurityException) {
+        null
+    }
+}
+
+val NetworkKind.shortName: String
+    get() = when (this) {
+        NetworkKind.Wifi -> "Wi-Fi"
+        NetworkKind.Mobile -> "Моб. сеть"
+    }
+
+private fun strategyKeyForNetwork(kind: NetworkKind) = "${ACTIVE_STRATEGY_KEY}_${kind.preferenceSuffix}"
+
+fun SharedPreferences.strategyForNetwork(kind: NetworkKind): String? =
+    getString(strategyKeyForNetwork(kind), null)
+
+fun SharedPreferences.rememberStrategyForNetwork(kind: NetworkKind, strategy: String) {
+    if (getString(strategyKeyForNetwork(kind), null) == strategy) return
+    edit().putString(strategyKeyForNetwork(kind), strategy).apply()
+}
+
+fun Context.applyStrategyForCurrentNetwork(): Boolean {
+    val kind = currentNetworkKind() ?: return false
+    val prefs = getSharedPreferences(packageName + "_preferences", Context.MODE_PRIVATE)
+    val networkStrategy = prefs.strategyForNetwork(kind) ?: return false
+    if (prefs.getString(ACTIVE_STRATEGY_KEY, null) == networkStrategy) return false
+    prefs.edit()
+        .putString(ACTIVE_STRATEGY_KEY, networkStrategy)
+        .putBoolean("byedpi_enable_cmd_settings", true)
+        .apply()
+    return true
+}
+
+const val NETFIX_NOTIFICATION_ID: Int = 1
+const val NETFIX_NOTIFICATION_CHANNEL_ID: String = "ByeDPIVpn"
+const val EXTRA_STOP_ALL: String = "stop_all"
+
+fun createStopAllPendingIntent(context: Context): PendingIntent {
+    val stopAllIntent = Intent(context, TgProxyService::class.java).apply {
+        action = STOP_ACTION
+        putExtra(EXTRA_STOP_ALL, true)
+    }
+    return PendingIntent.getForegroundService(
+        context, 4, stopAllIntent,
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+}
+
+fun createNetFixNotification(context: Context, vpnActive: Boolean = true): Notification {
+    val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+    val builder = NotificationCompat.Builder(context, NETFIX_NOTIFICATION_CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setSilent(true)
+        .setOngoing(true)
+        .setContentTitle("NetFix")
+        .setContentText(if (vpnActive) "Подключение защищено" else "Работает только прокси Telegram")
+        .setContentIntent(
+            PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        )
+    if (vpnActive && prefs.getBoolean("wants_youtube_bypass", true)) {
+        val pauseIntent = Intent(context, ByeDpiVpnService::class.java).apply { action = PAUSE_ACTION }
+        val pausePendingIntent = PendingIntent.getForegroundService(
+            context, 1, pauseIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        builder.addAction(R.drawable.ic_pause, "Приостановить", pausePendingIntent)
+    }
+    builder.addAction(R.drawable.ic_power, "Выключить", createStopAllPendingIntent(context))
+    return builder.build()
+}
+
 fun registerNotificationChannel(context: Context, id: String, @StringRes name: Int) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
@@ -152,12 +354,12 @@ fun createConnectionNotification(
     service: Class<*>,
 ): Notification {
     val pauseIntent = Intent(context, service).apply { action = PAUSE_ACTION }
-    val pausePendingIntent = PendingIntent.getService(
+    val pausePendingIntent = PendingIntent.getForegroundService(
         context, 1, pauseIntent,
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
     val stopIntent = Intent(context, service).apply { action = STOP_ACTION }
-    val stopPendingIntent = PendingIntent.getService(
+    val stopPendingIntent = PendingIntent.getForegroundService(
         context, 3, stopIntent,
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
@@ -185,14 +387,15 @@ fun createPauseNotification(
     @StringRes title: Int,
     @StringRes content: Int,
     service: Class<*>,
+    customStopPendingIntent: PendingIntent? = null,
 ): Notification {
     val resumeIntent = Intent(context, service).apply { action = RESUME_ACTION }
-    val resumePendingIntent = PendingIntent.getService(
+    val resumePendingIntent = PendingIntent.getForegroundService(
         context, 2, resumeIntent,
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
     val stopIntent = Intent(context, service).apply { action = STOP_ACTION }
-    val stopPendingIntent = PendingIntent.getService(
+    val stopPendingIntent = customStopPendingIntent ?: PendingIntent.getForegroundService(
         context, 3, stopIntent,
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )

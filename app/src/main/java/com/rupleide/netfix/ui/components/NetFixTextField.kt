@@ -85,7 +85,7 @@ fun NetFixTextField(
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = modifier,
+            modifier = modifier.nfTvKeyboardOnCenter(),
             readOnly = readOnly,
             textStyle = androidx.compose.ui.text.TextStyle(color = Color(0xFFF4F4F5), fontSize = 14.sp),
             keyboardOptions = keyboardOptions,

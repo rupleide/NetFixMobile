@@ -414,6 +414,16 @@ fn pick_preferred_ip(candidates: &[String]) -> String {
     fallback_v6
 }
 
+fn cached_doh_ip(domain: &str) -> Option<String> {
+    let cache = DOH_CACHE.read();
+    let (ip, expires) = cache.get(domain)?;
+    if Instant::now() < *expires {
+        Some(ip.clone())
+    } else {
+        None
+    }
+}
+
 pub async fn resolve_doh(domain: &str) -> Option<String> {
     if let Some((ip, exp)) = DOH_CACHE.read().get(domain).cloned() {
         if Instant::now() < exp {
@@ -551,6 +561,18 @@ pub async fn cf_connect_domain(
     let mut phase_timeout = attempt_timeout;
     if phase_timeout > CFPROXY_DIAL_PHASE_TIMEOUT {
         phase_timeout = CFPROXY_DIAL_PHASE_TIMEOUT;
+    }
+
+    if let Some(cached_ip) = cached_doh_ip(domain) {
+        let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
+        if let Ok(ws) = ws_connect_once(&cached_ip, domain, path, ip_timeout).await {
+            return (Some(ws), cached_ip, None);
+        }
+    } else {
+        let prefetch_domain = domain.to_string();
+        tokio::spawn(async move {
+            let _ = resolve_doh(&prefetch_domain).await;
+        });
     }
 
     let host_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);

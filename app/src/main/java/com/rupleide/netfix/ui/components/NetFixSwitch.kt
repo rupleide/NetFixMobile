@@ -29,6 +29,7 @@ fun NetFixSwitch(
     enabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    val haptics = rememberNetFixHaptics()
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val isHovered by interactionSource.collectIsHoveredAsState()
@@ -75,7 +76,10 @@ fun NetFixSwitch(
                 if (enabled) Modifier.clickable(
                     interactionSource = interactionSource,
                     indication = null
-                ) { onCheckedChange(!checked) }
+                ) {
+                    haptics(if (checked) NetFixHaptic.ToggleOff else NetFixHaptic.ToggleOn)
+                    onCheckedChange(!checked)
+                }
                 else Modifier
             ),
         contentAlignment = Alignment.CenterStart

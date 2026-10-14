@@ -1,5 +1,6 @@
 package com.rupleide.netfix.core.update
 
+import com.rupleide.netfix.core.dpibypass.launchIntentWithLeanback
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -16,7 +17,10 @@ import java.net.URL
 
 object UpdateManager {
 
-    private const val GITHUB_API_URL = "https://api.github.com/repos/rupleide/NetFixMobile/releases/latest"
+    private const val NETFIX_REPO = "rupleide/NetFixMobile"
+    private const val SMART_TUBE_REPO = "yuliskov/SmartTube"
+    private const val SMART_TUBE_FALLBACK_URL = "https://github.com/yuliskov/SmartTube/releases/download/31.94/SmartTube_stable_31.94_universal.apk"
+    private const val BROWSER_USER_AGENT = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 
     class UpdateInfo(
         val version: String,
@@ -24,48 +28,119 @@ object UpdateManager {
         val description: String
     )
 
+    private class LatestRelease(
+        val tag: String,
+        val apkUrl: String,
+        val description: String
+    )
+
     suspend fun checkUpdate(context: Context): UpdateInfo? {
         return withContext(Dispatchers.IO) {
             try {
-                val connection = URL(GITHUB_API_URL).openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                connection.setRequestProperty("User-Agent", "NetFixMobile")
-                connection.connectTimeout = 5000
-                connection.readTimeout = 5000
+                val isNetFixApk: (String) -> Boolean = { it.endsWith(".apk") }
+                val release = fetchLatestReleaseViaWeb(NETFIX_REPO, isNetFixApk)
+                    ?: fetchLatestReleaseViaApi(NETFIX_REPO, isNetFixApk)
+                    ?: return@withContext null
 
-                if (connection.responseCode == 200) {
-                    val response = connection.inputStream.bufferedReader().use { it.readText() }
-                    val json = JSONObject(response)
-                    val tagName = json.optString("tag_name", "")
-                    val body = json.optString("body", "")
-                    val assets = json.optJSONArray("assets")
+                val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0"
 
-                    var downloadUrl = ""
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.getJSONObject(i)
-                            val name = asset.optString("name", "")
-                            if (name.endsWith(".apk")) {
-                                downloadUrl = asset.optString("browser_download_url", "")
-                                break
-                            }
-                        }
-                    }
-
-                    val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0"
-
-                    if (tagName.isNotEmpty() && isNewerVersion(currentVersion, tagName) && downloadUrl.isNotEmpty()) {
-                        UpdateInfo(tagName, downloadUrl, body)
-                    } else {
-                        null
-                    }
+                if (isNewerVersion(currentVersion, release.tag)) {
+                    UpdateInfo(release.tag, release.apkUrl, release.description)
                 } else {
                     null
                 }
             } catch (e: Exception) {
                 null
             }
+        }
+    }
+
+    private fun fetchLatestReleaseViaWeb(repo: String, isWantedApk: (String) -> Boolean): LatestRelease? {
+        return try {
+            val tag = resolveLatestTag(repo) ?: return null
+            val assetsHtml = readText(
+                "https://github.com/$repo/releases/expanded_assets/$tag",
+                BROWSER_USER_AGENT
+            ) ?: return null
+            val apkPaths = Regex("""href="(/[^"]+/releases/download/[^"]+\.apk)"""", RegexOption.IGNORE_CASE)
+                .findAll(assetsHtml)
+                .map { it.groupValues[1] }
+                .toList()
+            val apkPath = apkPaths.firstOrNull { isWantedApk(it.substringAfterLast('/')) } ?: return null
+            LatestRelease(tag, "https://github.com$apkPath", "")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun resolveLatestTag(repo: String): String? {
+        val latestUrl = "https://github.com/$repo/releases/latest"
+        for (method in listOf("HEAD", "GET")) {
+            val connection = URL(latestUrl).openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = method
+                connection.instanceFollowRedirects = false
+                connection.setRequestProperty("User-Agent", BROWSER_USER_AGENT)
+                connection.connectTimeout = 8000
+                connection.readTimeout = 8000
+                val location = connection.getHeaderField("Location") ?: continue
+                val tagMarker = "/tag/"
+                val tagStart = location.lastIndexOf(tagMarker)
+                if (tagStart >= 0) {
+                    val tag = location.substring(tagStart + tagMarker.length).trim().trimEnd('/')
+                    if (tag.isNotEmpty()) return Uri.decode(tag)
+                }
+            } catch (_: Exception) {
+            } finally {
+                connection.disconnect()
+            }
+        }
+        return null
+    }
+
+    private fun fetchLatestReleaseViaApi(repo: String, isWantedApk: (String) -> Boolean): LatestRelease? {
+        return try {
+            val connection = URL("https://api.github.com/repos/$repo/releases/latest").openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            connection.setRequestProperty("User-Agent", "NetFixMobile")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+            if (connection.responseCode != 200) return null
+
+            val response = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(response)
+            val tagName = json.optString("tag_name", "")
+            val body = json.optString("body", "")
+            val assets = json.optJSONArray("assets") ?: return null
+
+            var downloadUrl = ""
+            for (i in 0 until assets.length()) {
+                val asset = assets.getJSONObject(i)
+                if (isWantedApk(asset.optString("name", ""))) {
+                    downloadUrl = asset.optString("browser_download_url", "")
+                    break
+                }
+            }
+
+            if (tagName.isEmpty() || downloadUrl.isEmpty()) null else LatestRelease(tagName, downloadUrl, body)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readText(url: String, userAgent: String): String? {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        return try {
+            connection.setRequestProperty("User-Agent", userAgent)
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+            if (connection.responseCode != 200) null
+            else connection.inputStream.bufferedReader().use { it.readText() }
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
         }
     }
 
@@ -84,33 +159,10 @@ object UpdateManager {
 
     suspend fun getSmartTubeLatestUrl(): String {
         return withContext(Dispatchers.IO) {
-            try {
-                val connection = URL("https://api.github.com/repos/yuliskov/SmartTube/releases/latest").openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                connection.setRequestProperty("User-Agent", "NetFixMobile")
-                connection.connectTimeout = 5000
-                connection.readTimeout = 5000
-
-                if (connection.responseCode == 200) {
-                    val response = connection.inputStream.bufferedReader().use { it.readText() }
-                    val json = JSONObject(response)
-                    val assets = json.optJSONArray("assets")
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.getJSONObject(i)
-                            val name = asset.optString("name", "")
-                            if (name.contains("_stable_") && name.endsWith("_universal.apk")) {
-                                val downloadUrl = asset.optString("browser_download_url", "")
-                                if (downloadUrl.isNotEmpty()) {
-                                    return@withContext downloadUrl
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
-            "https://github.com/yuliskov/SmartTube/releases/download/31.94/SmartTube_stable_31.94_universal.apk"
+            val isUniversalStableApk: (String) -> Boolean = { it.contains("_stable_") && it.endsWith("_universal.apk") }
+            val release = fetchLatestReleaseViaWeb(SMART_TUBE_REPO, isUniversalStableApk)
+                ?: fetchLatestReleaseViaApi(SMART_TUBE_REPO, isUniversalStableApk)
+            release?.apkUrl ?: SMART_TUBE_FALLBACK_URL
         }
     }
 
@@ -227,8 +279,8 @@ object UpdateManager {
 
     fun openSmartTube(context: Context) {
         val pm = context.packageManager
-        val intent = pm.getLaunchIntentForPackage("org.smarttube.stable")
-            ?: pm.getLaunchIntentForPackage("org.smarttube.beta")
+        val intent = pm.launchIntentWithLeanback("org.smarttube.stable")
+            ?: pm.launchIntentWithLeanback("org.smarttube.beta")
         if (intent != null) {
             context.startActivity(intent)
         }

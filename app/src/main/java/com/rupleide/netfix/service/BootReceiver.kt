@@ -24,14 +24,13 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         val prefs = appCtx.getSharedPreferences(appCtx.packageName + "_preferences", Context.MODE_PRIVATE)
-        val serviceEnabled = prefs.getBoolean("service_enabled", false)
         val autostart = prefs.getBoolean("autostart", false)
 
         val isBoot = intent.action == Intent.ACTION_BOOT_COMPLETED ||
                 intent.action == Intent.ACTION_REBOOT ||
                 intent.action == "android.intent.action.QUICKBOOT_POWERON"
 
-        if (serviceEnabled || (isBoot && autostart)) {
+        if (isBoot && autostart) {
             val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
             val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
             if (wantsYoutube && VpnService.prepare(appCtx) == null) {
@@ -41,11 +40,7 @@ class BootReceiver : BroadcastReceiver() {
                 if (wantsYoutube) {
                     TgProxyController.startAsync(appCtx, {}, {})
                 } else {
-                    val intent = Intent(appCtx, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                        action = com.rupleide.netfix.data.START_ACTION
-                        putExtra("open_tg", false)
-                    }
-                    androidx.core.content.ContextCompat.startForegroundService(appCtx, intent)
+                    com.rupleide.netfix.core.tgproxy.TgProxyService.startInForeground(appCtx, openTelegram = false)
                 }
             }
             WatchdogWorker.schedulePeriodicWork(appCtx)

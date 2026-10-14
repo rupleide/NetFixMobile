@@ -12,6 +12,9 @@ object AppDebugManager {
     private val logs = java.util.ArrayList<String>()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private var isEnabled = false
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var statsSampler: Thread? = null
+    private const val STATS_INTERVAL_MS = 10_000L
 
     fun i(tag: String, msg: String) {
         log("$tag: $msg")
@@ -46,6 +49,7 @@ object AppDebugManager {
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
         isEnabled = prefs.getBoolean("debug_log_enabled", false)
+        if (isEnabled) startBackgroundRecording(context.applicationContext)
     }
 
     fun setEnabled(context: Context, enabled: Boolean) {
@@ -53,12 +57,93 @@ object AppDebugManager {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("debug_log_enabled", enabled).apply()
         if (!enabled) {
+            stopBackgroundRecording(context.applicationContext)
             synchronized(logs) {
                 logs.clear()
             }
         } else {
             log("Отладка включена")
+            startBackgroundRecording(context.applicationContext)
         }
+    }
+
+    private fun describeNetwork(capabilities: android.net.NetworkCapabilities?): String {
+        if (capabilities == null) return "нет сети"
+        val transport = when {
+            capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+            capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "мобильная"
+            capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            else -> "другая"
+        }
+        val validated = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val internet = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return "$transport, интернет=$internet, проверена=$validated"
+    }
+
+    private fun startBackgroundRecording(appContext: Context) {
+        if (networkCallback == null) {
+            val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                private var lastSummary = ""
+
+                override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+                    val summary = describeNetwork(capabilities)
+                    if (summary == lastSummary) return
+                    lastSummary = summary
+                    log("Сеть по умолчанию: $summary")
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    lastSummary = ""
+                    log("Сеть по умолчанию потеряна")
+                }
+            }
+            try {
+                connectivityManager.registerDefaultNetworkCallback(callback)
+                networkCallback = callback
+            } catch (_: Exception) {
+            }
+        }
+        if (statsSampler == null) {
+            val sampler = Thread {
+                var lastStats = ""
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(STATS_INTERVAL_MS)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                    if (!com.rupleide.netfix.core.tgproxy.TgProxyController.isRunning) continue
+                    val stats = try {
+                        com.rupleide.netfix.core.tgproxy.NativeProxy.getStats() ?: continue
+                    } catch (_: Throwable) {
+                        continue
+                    }
+                    if (stats != lastStats) {
+                        lastStats = stats
+                        log("Статистика ядра TG: $stats")
+                    }
+                }
+            }
+            sampler.isDaemon = true
+            sampler.name = "netfix-debug-sampler"
+            sampler.start()
+            statsSampler = sampler
+        }
+    }
+
+    private fun stopBackgroundRecording(appContext: Context) {
+        networkCallback?.let {
+            val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            try {
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        networkCallback = null
+        statsSampler?.interrupt()
+        statsSampler = null
     }
 
     fun isLoggingEnabled(): Boolean = isEnabled
@@ -184,9 +269,9 @@ object AppDebugManager {
                 }
             }
             if (wantsTelegram) {
-                val port = prefs.getInt("tg_proxy_port", 0)
-                val cfEnabled = prefs.getBoolean("tg_cf_enabled", false)
-                val cfPriority = prefs.getBoolean("tg_cf_priority", false)
+                val port = com.rupleide.netfix.core.tgproxy.TgProxyController.getPort(context)
+                val cfEnabled = com.rupleide.netfix.core.tgproxy.TgProxyController.isCfEnabled(context)
+                val cfPriority = com.rupleide.netfix.core.tgproxy.TgProxyController.isCfPriority(context)
                 val isPortOpen = com.rupleide.netfix.core.tgproxy.TgProxyController.isPortOpen(
                     com.rupleide.netfix.core.tgproxy.TgProxyController.DEFAULT_BIND_IP,
                     port,

@@ -208,7 +208,7 @@ fun NetFixResetSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) {
                     detectTapGestures(onTap = { onDismissRequest() })
                 },
@@ -433,7 +433,7 @@ private fun ResetActionButton(
         label = "resetPress"
     )
     val bgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else RsButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else RsButtonBackground,
         animationSpec = tween(150),
         label = "resetBg"
     )
@@ -518,7 +518,7 @@ private fun ResetCloseButton(
         label = "rClosePress"
     )
     val bgColor by animateColorAsState(
-        targetValue = if (finalActive) Color(0xFF38383A) else RsButtonBackground,
+        targetValue = if (finalActive) Color(0xFF383838) else RsButtonBackground,
         animationSpec = tween(150),
         label = "rCloseBg"
     )

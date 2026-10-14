@@ -16,9 +16,9 @@ android {
     defaultConfig {
         applicationId = "com.rupleide.netfix"
         minSdk = 26
-        targetSdk = 26
-        versionCode = 4
-        versionName = "1.0.3"
+        targetSdk = 35
+        versionCode = 7
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -26,7 +26,6 @@ android {
     lint {
         checkReleaseBuilds = false
         abortOnError = false
-        disable.add("ExpiredTargetSdkVersion")
     }
 
     buildTypes {
@@ -60,10 +59,12 @@ android {
 }
 
 dependencies {
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.startup:startup-runtime:1.2.0")
     implementation("androidx.lifecycle:lifecycle-service:2.9.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -116,5 +117,5 @@ tasks.named("preBuild") {
 }
 
 base {
-    archivesName.set("NetFix-Mobile-v1.0.3")
+    archivesName.set("NetFix-Mobile-v1.0.4")
 }

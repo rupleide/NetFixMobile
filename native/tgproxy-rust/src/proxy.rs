@@ -6,7 +6,8 @@ use crate::{ldebug, linfo, lwarn};
 use byteorder::{ByteOrder, LittleEndian};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -585,6 +586,178 @@ pub async fn tcp_fallback(
 }
 
 // ---------------------------------------------------------------------------
+// Cfproxy pool: заранее открытые WS через Cloudflare для частых DC
+// ---------------------------------------------------------------------------
+
+const CF_POOL_TARGET: usize = 2;
+const CF_POOL_MAX_AGE_SECS: i64 = 60;
+const CF_POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+const CF_POOL_ACTIVE_WINDOW_SECS: i64 = 600;
+const CF_POOL_WARM_DCS: [i32; 2] = [2, 4];
+
+struct CfPoolEntry {
+    ws: RawWebSocket,
+    domain: String,
+    created: i64,
+}
+
+static CF_POOL: Lazy<parking_lot::Mutex<HashMap<i32, VecDeque<CfPoolEntry>>>> =
+    Lazy::new(|| parking_lot::Mutex::new(HashMap::new()));
+static CF_POOL_REFILLING: Lazy<parking_lot::Mutex<HashSet<i32>>> =
+    Lazy::new(|| parking_lot::Mutex::new(HashSet::new()));
+static CF_POOL_LAST_USED: Lazy<parking_lot::Mutex<HashMap<i32, i64>>> =
+    Lazy::new(|| parking_lot::Mutex::new(HashMap::new()));
+static CF_POOL_ROOT: Lazy<parking_lot::RwLock<CancellationToken>> =
+    Lazy::new(|| parking_lot::RwLock::new(CancellationToken::new()));
+
+fn cf_entry_usable(e: &CfPoolEntry, now: i64) -> bool {
+    !e.ws.is_closed() && now - e.created <= CF_POOL_MAX_AGE_SECS
+}
+
+fn close_in_background(sockets: Vec<RawWebSocket>) {
+    for ws in sockets {
+        tokio::spawn(async move {
+            ws.close().await;
+        });
+    }
+}
+
+fn cf_pool_take(dc: i32) -> Option<(RawWebSocket, String)> {
+    let now = now_unix();
+    let mut stale: Vec<RawWebSocket> = Vec::new();
+    let mut found: Option<(RawWebSocket, String)> = None;
+    {
+        let mut pool = CF_POOL.lock();
+        if let Some(q) = pool.get_mut(&dc) {
+            while let Some(e) = q.pop_front() {
+                if cf_entry_usable(&e, now) {
+                    found = Some((e.ws, e.domain));
+                    break;
+                }
+                stale.push(e.ws);
+            }
+        }
+    }
+    close_in_background(stale);
+    found
+}
+
+fn cf_pool_mark_used(dc: i32) {
+    CF_POOL_LAST_USED.lock().insert(dc, now_unix());
+}
+
+fn cf_pool_refill_async(dc: i32) {
+    if !CFPROXY_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    {
+        let mut refilling = CF_POOL_REFILLING.lock();
+        if !refilling.insert(dc) {
+            return;
+        }
+    }
+    let cancel = CF_POOL_ROOT.read().clone();
+    tokio::spawn(async move {
+        cf_pool_refill(dc, &cancel).await;
+        CF_POOL_REFILLING.lock().remove(&dc);
+    });
+}
+
+async fn cf_pool_refill(dc: i32, cancel: &CancellationToken) {
+    let now = now_unix();
+    let mut stale: Vec<RawWebSocket> = Vec::new();
+    let have = {
+        let mut pool = CF_POOL.lock();
+        let q = pool.entry(dc).or_default();
+        let mut kept: VecDeque<CfPoolEntry> = VecDeque::new();
+        while let Some(e) = q.pop_front() {
+            if cf_entry_usable(&e, now) {
+                kept.push_back(e);
+            } else {
+                stale.push(e.ws);
+            }
+        }
+        let len = kept.len();
+        *q = kept;
+        len
+    };
+    close_in_background(stale);
+
+    for _ in have..CF_POOL_TARGET {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let acquired = cfproxy_acquire_ws(dc, false, cancel).await;
+        match acquired {
+            Some((ws, domain)) => {
+                let entry = CfPoolEntry {
+                    ws,
+                    domain,
+                    created: now_unix(),
+                };
+                CF_POOL.lock().entry(dc).or_default().push_back(entry);
+            }
+            None => return,
+        }
+    }
+}
+
+pub fn cf_pool_drain() -> Vec<RawWebSocket> {
+    let mut drained = Vec::new();
+    let mut pool = CF_POOL.lock();
+    for (_, q) in pool.iter_mut() {
+        while let Some(e) = q.pop_front() {
+            drained.push(e.ws);
+        }
+    }
+    drained
+}
+
+pub fn cf_pool_refill_active() {
+    let now = now_unix();
+    let active: Vec<i32> = CF_POOL_LAST_USED
+        .lock()
+        .iter()
+        .filter(|(_, last)| now - **last <= CF_POOL_ACTIVE_WINDOW_SECS)
+        .map(|(dc, _)| *dc)
+        .collect();
+    for dc in active {
+        cf_pool_refill_async(dc);
+    }
+}
+
+fn start_cf_pool_keeper(cancel: CancellationToken) {
+    *CF_POOL_ROOT.write() = cancel.clone();
+    let now = now_unix();
+    {
+        let mut used = CF_POOL_LAST_USED.lock();
+        for dc in CF_POOL_WARM_DCS {
+            used.insert(dc, now);
+        }
+    }
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CF_POOL_REFRESH_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = interval.tick() => {
+                    let now = now_unix();
+                    let active: Vec<i32> = CF_POOL_LAST_USED
+                        .lock()
+                        .iter()
+                        .filter(|(_, last)| now - **last <= CF_POOL_ACTIVE_WINDOW_SECS)
+                        .map(|(dc, _)| *dc)
+                        .collect();
+                    for dc in active {
+                        cf_pool_refill_async(dc);
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Cfproxy fallback
 // ---------------------------------------------------------------------------
 
@@ -665,46 +838,56 @@ async fn cfproxy_acquire_ws(
     let m_tag = media_tag(is_media);
     ldebug!(" CF fallback DC{}{}: {} домен(ов)", dc, m_tag, ordered.len());
 
-    let mut ws: Option<RawWebSocket> = None;
-    let mut chosen_domain = String::new();
+    let mut candidates = ordered
+        .into_iter()
+        .filter(|d| !d.is_empty() && cfproxy_429_cooldown_remaining(d) == Duration::ZERO)
+        .take(CFPROXY_RACE_MAX_DOMAINS);
 
-    if !ordered.is_empty() && !ordered[0].is_empty() {
-        let (w, d) = try_cfproxy_base_domain(dc, &ordered[0]).await;
-        ws = w;
-        chosen_domain = d;
-    }
+    let mut attempts: tokio::task::JoinSet<Option<(RawWebSocket, String)>> =
+        tokio::task::JoinSet::new();
+    let mut stagger = tokio::time::interval(CFPROXY_RACE_STAGGER);
+    stagger.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let deadline = tokio::time::sleep(CFPROXY_RACE_DEADLINE);
+    tokio::pin!(deadline);
 
-    if ws.is_none() && ordered.len() > 1 {
-        let remaining_domains: Vec<String> = ordered[1..].to_vec();
-        let sem = Arc::new(tokio::sync::Semaphore::new(CFPROXY_FALLBACK_PARALLEL));
-        let mut handles = Vec::new();
-        for bd in remaining_domains {
-            let sem = sem.clone();
-            let cancel = cancel_token.clone();
-            handles.push(tokio::spawn(async move {
-                tokio::select! {
-                    _ = cancel.cancelled() => None,
-                    r = async {
-                        let _p = sem.acquire().await.ok()?;
-                        let (w, d) = try_cfproxy_base_domain(dc, &bd).await;
-                        w.map(|ws| (ws, d))
-                    } => r,
+    let mut exhausted = false;
+    let mut winner: Option<(RawWebSocket, String)> = None;
+
+    loop {
+        tokio::select! {
+            _ = cancel_token.cancelled() => break,
+            _ = &mut deadline => break,
+            _ = stagger.tick(), if !exhausted => {
+                match candidates.next() {
+                    Some(base_domain) => {
+                        attempts.spawn(async move {
+                            let (w, d) = try_cfproxy_base_domain(dc, &base_domain).await;
+                            w.map(|ws| (ws, d))
+                        });
+                    }
+                    None => exhausted = true,
                 }
-            }));
-        }
-        for h in handles {
-            if let Ok(Some((w, d))) = h.await {
-                if ws.is_none() {
-                    ws = Some(w);
-                    chosen_domain = d;
-                } else {
-                    tokio::spawn(async move {
-                        w.close().await;
-                    });
+            }
+            joined = attempts.join_next(), if !attempts.is_empty() => {
+                if let Some(Ok(Some(pair))) = joined {
+                    winner = Some(pair);
+                    break;
+                }
+                if attempts.is_empty() && !exhausted {
+                    stagger.reset_immediately();
                 }
             }
         }
+        if exhausted && attempts.is_empty() {
+            break;
+        }
     }
+    attempts.abort_all();
+
+    let (ws, chosen_domain) = match winner {
+        Some((w, d)) => (Some(w), d),
+        None => (None, String::new()),
+    };
 
     match ws {
         Some(w) => {
@@ -750,35 +933,30 @@ pub async fn do_fallback(
     let use_cf = CFPROXY_ENABLED.load(Ordering::Relaxed);
 
     if use_cf {
-        // Сначала добываем WS через CF, conn не трогаем.
-        if let Some((ws, chosen_domain)) =
-            cfproxy_acquire_ws(dc, is_media, &cancel_token).await
-        {
+        cf_pool_mark_used(dc);
+
+        let mut ready: Option<(RawWebSocket, String)> = None;
+        while let Some((ws, domain)) = cf_pool_take(dc) {
+            if ws.send(relay_init).await.is_ok() {
+                ready = Some((ws, domain));
+                break;
+            }
+            ws.close().await;
+        }
+        if ready.is_none() {
+            if let Some((ws, domain)) = cfproxy_acquire_ws(dc, is_media, &cancel_token).await {
+                if ws.send(relay_init).await.is_ok() {
+                    ready = Some((ws, domain));
+                } else {
+                    ws.close().await;
+                }
+            }
+        }
+        cf_pool_refill_async(dc);
+
+        if let Some((ws, chosen_domain)) = ready {
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             linfo!(" DC{}{} подключен через CF", dc, media_tag(is_media));
-
-            if ws.send(relay_init).await.is_err() {
-                ws.close().await;
-                // CF умер сразу после хендшейка — пробуем TCP на том же conn.
-                if !fallback_dst.is_empty() {
-                    return tcp_fallback(
-                        conn,
-                        &fallback_dst,
-                        443,
-                        relay_init,
-                        label,
-                        dc,
-                        is_media,
-                        clt_dec,
-                        clt_enc,
-                        tg_enc,
-                        tg_dec,
-                        cancel_token,
-                    )
-                    .await;
-                }
-                return false;
-            }
 
             bridge_ws(
                 conn,
@@ -825,6 +1003,24 @@ pub async fn do_fallback(
 // ---------------------------------------------------------------------------
 // Client handler (dd-only)
 // ---------------------------------------------------------------------------
+
+const BAD_HANDSHAKE_HOLD: Duration = Duration::from_secs(4);
+const BAD_HANDSHAKE_LOG_GAP_SECS: i64 = 30;
+static LAST_BAD_HANDSHAKE_LOG: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+fn warn_bad_handshake_rate_limited() {
+    let now = now_unix();
+    let last = LAST_BAD_HANDSHAKE_LOG.load(Ordering::Relaxed);
+    if now - last < BAD_HANDSHAKE_LOG_GAP_SECS {
+        return;
+    }
+    if LAST_BAD_HANDSHAKE_LOG
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        lwarn!(" неверное рукопожатие: клиент подключается с другим секретом или не по MTProto (dd)");
+    }
+}
 
 pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token: CancellationToken) {
     STATS.connections_total.fetch_add(1, Ordering::Relaxed);
@@ -879,6 +1075,11 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let proto = LittleEndian::read_u32(proto_tag);
     if !valid_proto(proto) {
         STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
+        warn_bad_handshake_rate_limited();
+        tokio::select! {
+            _ = cancel_token.cancelled() => {}
+            _ = tokio::time::sleep(BAD_HANDSHAKE_HOLD) => {}
+        }
         return;
     }
 
@@ -1163,6 +1364,7 @@ pub async fn run_proxy(
     }
 
     start_cfproxy_refresh();
+    start_cf_pool_keeper(cancel_root.clone());
 
     {
         let p = pool.clone();

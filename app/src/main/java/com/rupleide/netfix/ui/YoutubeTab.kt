@@ -1,10 +1,13 @@
 package com.rupleide.netfix.ui
 
+import com.rupleide.netfix.core.dpibypass.launchIntentWithLeanback
+import com.rupleide.netfix.ui.components.safeBarsWithoutKeyboard
 import com.rupleide.netfix.ui.components.NetFixTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import com.rupleide.netfix.ui.components.NetFixEditStrategySheet
 import com.rupleide.netfix.ui.components.NetFixStrategySheet
+import com.rupleide.netfix.ui.components.launchVpnConsentSafely
 import com.rupleide.netfix.ui.components.StrategyAction
 import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.compose.material.icons.Icons
@@ -13,6 +16,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 
 import androidx.compose.foundation.background
@@ -69,12 +73,13 @@ import androidx.compose.ui.unit.sp
 import com.rupleide.netfix.R
 import com.rupleide.netfix.core.dpibypass.ServiceManager
 import com.rupleide.netfix.core.dpibypass.StrategyTestManager
+import com.rupleide.netfix.core.dpibypass.StrategyTester
 import com.rupleide.netfix.data.Mode
 import com.rupleide.netfix.data.AppStatus
 import com.rupleide.netfix.data.appStatus
 
 @Composable
-fun YoutubeTab(
+fun YoutubeAdvancedTab(
     focusRequester: FocusRequester,
     navBarFocusRequester: FocusRequester,
     modifier: Modifier = Modifier
@@ -84,8 +89,8 @@ fun YoutubeTab(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     val density = LocalDensity.current
-    val safeBottomInset = with(density) { WindowInsets.safeDrawing.getBottom(density).toDp() }
-    val navOverlayReserve = safeBottomInset + 86.dp
+    val safeBottomInset = with(density) { WindowInsets.safeBarsWithoutKeyboard.getBottom(density).toDp() }
+    val navOverlayReserve = safeBottomInset + com.rupleide.netfix.ui.components.navBarReserve()
 
     val sharedPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE) }
     val isSmartTv = remember(context) { sharedPrefs.getBoolean("is_smart_tv", false) }
@@ -106,6 +111,17 @@ fun YoutubeTab(
     var deletingStrategy by remember { mutableStateOf<String?>(null) }
     var editNameText by remember { mutableStateOf("") }
     var editNotesText by remember { mutableStateOf("") }
+    var isCreatingCustomStrategy by remember { mutableStateOf(false) }
+    var customStrategyName by remember { mutableStateOf("") }
+    var customStrategyCommand by remember { mutableStateOf("") }
+    var customStrategyError by remember { mutableStateOf<String?>(null) }
+
+    fun openCustomStrategyCreator() {
+        customStrategyName = ""
+        customStrategyCommand = ""
+        customStrategyError = null
+        isCreatingCustomStrategy = true
+    }
     val isSmartTube = youtubeMode == "smarttube"
 
     var activeCmd by remember { mutableStateOf(sharedPrefs.getString("byedpi_cmd_args", null)) }
@@ -126,18 +142,35 @@ fun YoutubeTab(
         return StrategyTestManager.testResults.sortedWith { a, b ->
             val aStrategy = a.second
             val bStrategy = b.second
-            val aNormalized = aStrategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
-            val bNormalized = bStrategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+            val aNormalized = StrategyTester.normalizeStrategy(aStrategy)
+            val bNormalized = StrategyTester.normalizeStrategy(bStrategy)
             val aPinned = StrategyTestManager.pinnedStrategies[aStrategy] ?: false
             val bPinned = StrategyTestManager.pinnedStrategies[bStrategy] ?: false
-            val aCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == aNormalized
-            val bCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == bNormalized
+            val aCurrent = currentCmd != null && StrategyTester.normalizeStrategy(currentCmd) == aNormalized
+            val bCurrent = currentCmd != null && StrategyTester.normalizeStrategy(currentCmd) == bNormalized
             
             val aWeight = (if (aPinned) 2 else 0) + (if (aCurrent) 1 else 0)
             val bWeight = (if (bPinned) 2 else 0) + (if (bCurrent) 1 else 0)
             
             bWeight.compareTo(aWeight)
         }
+    }
+
+    fun getManualStrategies(): List<Triple<Int, String, String>> {
+        val currentCmd = activeCmd
+        val sortedStrategies = getSortedStrategies()
+        val alwaysShownStrategies = sortedStrategies.filter { (_, strategy, _) ->
+            val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
+            val isCurrent = currentCmd != null &&
+                StrategyTester.normalizeStrategy(currentCmd) == StrategyTester.normalizeStrategy(strategy)
+            isPinned || isCurrent || StrategyTestManager.isCustomStrategy(strategy)
+        }
+        val remainingSlots = (MANUAL_STRATEGY_LIMIT - alwaysShownStrategies.size).coerceAtLeast(0)
+        val bestOtherStrategies = sortedStrategies
+            .filterNot { it in alwaysShownStrategies }
+            .sortedByDescending { StrategyTester.successScore(it.third) ?: -1.0 }
+            .take(remainingSlots)
+        return alwaysShownStrategies + bestOtherStrategies
     }
 
     val presets = remember {
@@ -162,8 +195,9 @@ fun YoutubeTab(
         }
     }
 
+    val tvSingleFocus = com.rupleide.netfix.ui.components.LocalIsTv.current
     LaunchedEffect(currentTestIndex, hasLaunchedTest, isSetupComplete, smartTubeInstalled.value) {
-        repeat(8) { index ->
+        repeat(if (tvSingleFocus) 1 else 8) { index ->
             try {
                 focusRequester.requestFocus()
             } catch (_: Exception) {}
@@ -222,7 +256,7 @@ fun YoutubeTab(
         com.rupleide.netfix.core.debug.AppDebugManager.log("Запуск внешнего плеера: $target")
         if (!isSmartTv) {
             val pm = context.packageManager
-            val intent = pm.getLaunchIntentForPackage("com.google.android.youtube")
+            val intent = pm.launchIntentWithLeanback("com.google.android.youtube")
             if (intent != null) {
                 context.startActivity(intent)
             } else {
@@ -239,9 +273,9 @@ fun YoutubeTab(
             com.rupleide.netfix.core.update.UpdateManager.openSmartTube(context)
         } else {
             val pm = context.packageManager
-            var intent = pm.getLaunchIntentForPackage("com.google.android.youtube.tv")
+            var intent = pm.launchIntentWithLeanback("com.google.android.youtube.tv")
             if (intent == null) {
-                intent = pm.getLaunchIntentForPackage("com.google.android.youtube")
+                intent = pm.launchIntentWithLeanback("com.google.android.youtube")
             }
             if (intent != null) {
                 context.startActivity(intent)
@@ -303,13 +337,14 @@ fun YoutubeTab(
     var showVpnDeniedDialog by remember { mutableStateOf(false) }
     var showTestingTypeDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(editingStrategy, deletingStrategy, showActionMenuForStrategy, showVpnDeniedDialog, showTestingTypeDialog, showAllStrategiesList) {
-        com.rupleide.netfix.data.isActionSheetVisibleGlobal = (editingStrategy != null) || 
-            (deletingStrategy != null) || 
-            (showActionMenuForStrategy != null) || 
-            showVpnDeniedDialog || 
-            showTestingTypeDialog || 
-            showAllStrategiesList
+    LaunchedEffect(editingStrategy, deletingStrategy, showActionMenuForStrategy, showVpnDeniedDialog, showTestingTypeDialog, showAllStrategiesList, isCreatingCustomStrategy) {
+        com.rupleide.netfix.data.isActionSheetVisibleGlobal = (editingStrategy != null) ||
+            (deletingStrategy != null) ||
+            (showActionMenuForStrategy != null) ||
+            showVpnDeniedDialog ||
+            showTestingTypeDialog ||
+            showAllStrategiesList ||
+            isCreatingCustomStrategy
     }
 
     val vpnLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -450,6 +485,14 @@ fun YoutubeTab(
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center
                         )
+
+                        if (StrategyTestManager.canFinishEarly) {
+                            com.rupleide.netfix.ui.components.NetFixButton(
+                                text = "Завершить досрочно и выбрать лучший",
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = { StrategyTestManager.finishScanEarly() }
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Box(
@@ -627,7 +670,7 @@ fun YoutubeTab(
                     val btnHighlighted = btnPressed || btnHovered || btnFocused
 
                     val btnBgColor by animateColorAsState(
-                        targetValue = if (btnHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                        targetValue = if (btnHighlighted) Color(0xFF383838) else Color(0xFF242424),
                         animationSpec = tween(150),
                         label = ""
                     )
@@ -732,7 +775,7 @@ fun YoutubeTab(
                     ) {
                         for (item in getSortedStrategies()) {
                             val (index, strategy, status) = item
-                            val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                            val normalized = StrategyTester.normalizeStrategy(strategy)
                             val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
                             val displayStatus = when (manualStatus) {
                                 "working" -> "Работает"
@@ -742,7 +785,11 @@ fun YoutubeTab(
                             val statusColor = when (manualStatus) {
                                 "working" -> Color(0xFF22C55E)
                                 "failed" -> Color(0xFFEF4444)
-                                else -> if (status.contains("мс")) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                else -> when {
+                                    StrategyTester.isSuccessfulStatus(status) -> Color(0xFF22C55E)
+                                    !status.contains("тайм-аут") -> Color(0xFFA1A1AA)
+                                    else -> Color(0xFFEF4444)
+                                }
                             }
                             val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
                             val customName = StrategyTestManager.customNames[strategy]
@@ -752,7 +799,7 @@ fun YoutubeTab(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF242426))
+                                    .background(Color(0xFF242424))
                                     .border(1.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(8.dp))
                                     .padding(12.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -772,12 +819,6 @@ fun YoutubeTab(
                                         fontSize = 14.sp
                                     )
                                     if (advancedMode) {
-                                        Text(
-                                            text = strategy,
-                                            color = Color(0xFFA1A1AA),
-                                            fontSize = 11.sp,
-                                            maxLines = 1
-                                        )
                                         if (!notes.isNullOrBlank()) {
                                             Text(
                                                 text = "Заметка: $notes",
@@ -891,7 +932,7 @@ fun YoutubeTab(
 
                     val currentCmd = activeCmd
                     val activePing = if (currentCmd != null) {
-                         val item = StrategyTestManager.testResults.find { it.second.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") }
+                         val item = StrategyTestManager.testResults.find { StrategyTester.normalizeStrategy(it.second) == StrategyTester.normalizeStrategy(currentCmd) }
                         item?.third?.replace(" (Успешно)", "") ?: "неизвестно"
                     } else {
                         "неизвестно"
@@ -902,7 +943,7 @@ fun YoutubeTab(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF242426))
+                            .background(Color(0xFF242424))
                             .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(12.dp))
                             .padding(12.dp)
                     ) {
@@ -1048,7 +1089,7 @@ fun YoutubeTab(
                     val openHighlighted = openPressed || openHovered || openFocused
 
                     val openBgColor by animateColorAsState(
-                        targetValue = if (openHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                        targetValue = if (openHighlighted) Color(0xFF383838) else Color(0xFF242424),
                         animationSpec = tween(150),
                         label = ""
                     )
@@ -1078,7 +1119,7 @@ fun YoutubeTab(
                                 if (appStatus.first != AppStatus.Running) {
                                     val intent = android.net.VpnService.prepare(context)
                                     if (intent != null) {
-                                        vpnLauncher.launch(intent)
+                                        vpnLauncher.launchVpnConsentSafely(intent)
                                     } else {
                                         startAll()
                                         launchYoutubeApp()
@@ -1165,13 +1206,15 @@ fun YoutubeTab(
                                     fontWeight = FontWeight.Medium
                                 )
 
+                        AddCustomStrategyButton(onClick = { openCustomStrategyCreator() })
+
                                 Column(
                                     verticalArrangement = Arrangement.spacedBy(10.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    getSortedStrategies().forEachIndexed { idx, item ->
+                                    getManualStrategies().forEachIndexed { idx, item ->
                                         val (index, strategy, status) = item
-                                        val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                                        val normalized = StrategyTester.normalizeStrategy(strategy)
                                         val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
                                         val displayStatus = when (manualStatus) {
                                             "working" -> "Работает"
@@ -1181,13 +1224,17 @@ fun YoutubeTab(
                                         val statusColor = when (manualStatus) {
                                             "working" -> Color(0xFF22C55E)
                                             "failed" -> Color(0xFFEF4444)
-                                            else -> if (status.contains("мс")) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                            else -> when {
+                                    StrategyTester.isSuccessfulStatus(status) -> Color(0xFF22C55E)
+                                    !status.contains("тайм-аут") -> Color(0xFFA1A1AA)
+                                    else -> Color(0xFFEF4444)
+                                }
                                         }
                                         val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
                                         val customName = StrategyTestManager.customNames[strategy]
                                         val notes = StrategyTestManager.strategyNotes[strategy]
                                         val currentCmd = activeCmd
-                                 val isCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
+                                 val isCurrent = currentCmd != null && StrategyTester.normalizeStrategy(currentCmd) == normalized
 
                                         val rowInteractionSource = remember { MutableInteractionSource() }
                                         val rowFocused by rowInteractionSource.collectIsFocusedAsState()
@@ -1208,7 +1255,7 @@ fun YoutubeTab(
                                         val rowHighlighted = rowFocused || rowHovered || pinFocused || pinHovered || editFocused || editHovered || deleteFocused || deleteHovered
 
                                         val rowBgColor by animateColorAsState(
-                                            targetValue = if (rowHighlighted) Color(0xFF38383A) else if (isCurrent) Color(0xFF2D2D30) else Color(0xFF242426),
+                                            targetValue = if (rowHighlighted) Color(0xFF383838) else if (isCurrent) Color(0xFF2D2D30) else Color(0xFF242424),
                                             animationSpec = tween(150),
                                             label = ""
                                         )
@@ -1250,12 +1297,6 @@ fun YoutubeTab(
                                                         fontSize = 14.sp
                                                     )
                                                     if (advancedMode) {
-                                                        Text(
-                                                            text = strategy,
-                                                            color = Color(0xFFA1A1AA),
-                                                            fontSize = 11.sp,
-                                                            maxLines = 1
-                                                        )
                                                         if (!notes.isNullOrBlank()) {
                                                             Text(
                                                                 text = "Заметка: $notes",
@@ -1441,7 +1482,7 @@ fun YoutubeTab(
                     val backListHighlighted = backListPressed || backListHovered || backListFocused
 
                     val backListBgColor by animateColorAsState(
-                        targetValue = if (backListHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                        targetValue = if (backListHighlighted) Color(0xFF383838) else Color(0xFF242424),
                         animationSpec = tween(150),
                         label = ""
                     )
@@ -1582,7 +1623,7 @@ fun YoutubeTab(
                         val testBtnHighlighted = testBtnPressed || testBtnHovered || testBtnFocused
 
                         val testBtnBgColor by animateColorAsState(
-                            targetValue = if (testBtnHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                            targetValue = if (testBtnHighlighted) Color(0xFF383838) else Color(0xFF242424),
                             animationSpec = tween(150),
                             label = ""
                         )
@@ -1604,7 +1645,7 @@ fun YoutubeTab(
                                     interactionSource = testBtnInteractionSource,
                                     indication = null
                                 ) {
-                                    val successfulStrategies = StrategyTestManager.testResults.filter { it.third.contains("мс") }.map { it.second }
+                                    val successfulStrategies = StrategyTestManager.recommendedStrategies()
                                     if (successfulStrategies.isNotEmpty()) {
                                         val strategy = successfulStrategies[0]
                                         sharedPrefs.edit()
@@ -1641,13 +1682,15 @@ fun YoutubeTab(
                             fontWeight = FontWeight.Medium
                         )
 
+                        AddCustomStrategyButton(onClick = { openCustomStrategyCreator() })
+
                         Column(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            getSortedStrategies().forEachIndexed { idx, item ->
+                            getManualStrategies().forEachIndexed { idx, item ->
                                 val (index, strategy, status) = item
-                                val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                                val normalized = StrategyTester.normalizeStrategy(strategy)
                                 val manualStatus = sharedPrefs.getString("manual_status_$normalized", null)
                                 val displayStatus = when (manualStatus) {
                                     "working" -> "Работает"
@@ -1657,13 +1700,17 @@ fun YoutubeTab(
                                 val statusColor = when (manualStatus) {
                                     "working" -> Color(0xFF22C55E)
                                     "failed" -> Color(0xFFEF4444)
-                                    else -> if (status.contains("мс")) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                    else -> when {
+                                    StrategyTester.isSuccessfulStatus(status) -> Color(0xFF22C55E)
+                                    !status.contains("тайм-аут") -> Color(0xFFA1A1AA)
+                                    else -> Color(0xFFEF4444)
+                                }
                                 }
                                 val isPinned = StrategyTestManager.pinnedStrategies[strategy] ?: false
                                 val customName = StrategyTestManager.customNames[strategy]
                                 val notes = StrategyTestManager.strategyNotes[strategy]
                                 val currentCmd = activeCmd
-                                 val isCurrent = currentCmd != null && currentCmd.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com") == normalized
+                                 val isCurrent = currentCmd != null && StrategyTester.normalizeStrategy(currentCmd) == normalized
 
                                 val rowInteractionSource = remember { MutableInteractionSource() }
                                 val rowFocused by rowInteractionSource.collectIsFocusedAsState()
@@ -1684,7 +1731,7 @@ fun YoutubeTab(
                                 val rowHighlighted = rowFocused || rowHovered || pinFocused || pinHovered || editFocused || editHovered || deleteFocused || deleteHovered
 
                                 val rowBgColor by animateColorAsState(
-                                    targetValue = if (rowHighlighted) Color(0xFF38383A) else if (isCurrent) Color(0xFF3B82F6).copy(alpha = 0.15f) else Color(0xFF242426),
+                                    targetValue = if (rowHighlighted) Color(0xFF383838) else if (isCurrent) Color(0xFF3B82F6).copy(alpha = 0.15f) else Color(0xFF242424),
                                     animationSpec = tween(150),
                                     label = ""
                                 )
@@ -1726,12 +1773,6 @@ fun YoutubeTab(
                                                 fontSize = 14.sp
                                             )
                                             if (advancedMode) {
-                                                Text(
-                                                    text = strategy,
-                                                    color = Color(0xFFA1A1AA),
-                                                    fontSize = 11.sp,
-                                                    maxLines = 1
-                                                )
                                                 if (!notes.isNullOrBlank()) {
                                                     Text(
                                                         text = "Заметка: $notes",
@@ -1924,7 +1965,7 @@ fun YoutubeTab(
                         val playHighlighted = playPressed || playHovered || playFocused
 
                         val playBgColor by animateColorAsState(
-                            targetValue = if (playHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                            targetValue = if (playHighlighted) Color(0xFF383838) else Color(0xFF242424),
                             animationSpec = tween(150),
                             label = ""
                         )
@@ -1946,7 +1987,7 @@ fun YoutubeTab(
                                     interactionSource = playInteractionSource,
                                     indication = null
                                 ) {
-                                    val successfulStrategies = StrategyTestManager.testResults.filter { it.third.contains("мс") }.map { it.second }
+                                    val successfulStrategies = StrategyTestManager.recommendedStrategies()
                                     val strategy = successfulStrategies.getOrNull(currentTestIndex) ?: (presets.getOrNull(currentTestIndex) ?: presets[0])
                                     sharedPrefs.edit()
                                         .putString("byedpi_cmd_args", strategy)
@@ -1955,7 +1996,7 @@ fun YoutubeTab(
                                     com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy = strategy
                                     val intent = android.net.VpnService.prepare(context)
                                     if (intent != null) {
-                                        vpnLauncher.launch(intent)
+                                        vpnLauncher.launchVpnConsentSafely(intent)
                                     } else {
                                         startAll()
                                         launchYoutubeApp()
@@ -1988,7 +2029,7 @@ fun YoutubeTab(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF242426))
+                                .background(Color(0xFF242424))
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
@@ -2028,7 +2069,7 @@ fun YoutubeTab(
                             val okHighlighted = okPressed || okHovered || okFocused
 
                             val okBgColor by animateColorAsState(
-                                targetValue = if (okHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                                targetValue = if (okHighlighted) Color(0xFF383838) else Color(0xFF242424),
                                 animationSpec = tween(150),
                                 label = ""
                             )
@@ -2050,10 +2091,10 @@ fun YoutubeTab(
                                         interactionSource = okInteractionSource,
                                         indication = null
                                     ) {
-                                        val successfulStrategies = StrategyTestManager.testResults.filter { it.third.contains("мс") }.map { it.second }
+                                        val successfulStrategies = StrategyTestManager.recommendedStrategies()
                                         val strategy = com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy 
                                             ?: (successfulStrategies.getOrNull(currentTestIndex) ?: (presets.getOrNull(currentTestIndex) ?: presets[0]))
-                                        val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                                        val normalized = StrategyTester.normalizeStrategy(strategy)
                                         sharedPrefs.edit()
                                             .putString("byedpi_cmd_args", strategy)
                                             .putBoolean("byedpi_enable_cmd_settings", true)
@@ -2083,7 +2124,7 @@ fun YoutubeTab(
                             val failHighlighted = failPressed || failHovered || failFocused
 
                             val failBgColor by animateColorAsState(
-                                targetValue = if (failHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                                targetValue = if (failHighlighted) Color(0xFF383838) else Color(0xFF242424),
                                 animationSpec = tween(150),
                                 label = ""
                             )
@@ -2104,10 +2145,10 @@ fun YoutubeTab(
                                         interactionSource = failInteractionSource,
                                         indication = null
                                     ) {
-                                        val successfulStrategies = StrategyTestManager.testResults.filter { it.third.contains("мс") }.map { it.second }
+                                        val successfulStrategies = StrategyTestManager.recommendedStrategies()
                                         val strategy = com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy 
                                             ?: (successfulStrategies.getOrNull(currentTestIndex) ?: (presets.getOrNull(currentTestIndex) ?: presets[0]))
-                                        val normalized = strategy.replace("{sni}", "youtube.com,googlevideo.com,ytimg.com,ggpht.com,google.com")
+                                        val normalized = StrategyTester.normalizeStrategy(strategy)
                                         val wasManual = sharedPrefs.getBoolean("was_manual_selection", false)
                                         sharedPrefs.edit()
                                             .putString("manual_status_$normalized", "failed")
@@ -2119,7 +2160,7 @@ fun YoutubeTab(
                                             saveManualMode(true)
                                             saveIsSetupComplete(true)
                                         } else {
-                                            val successfulStrategiesCount = StrategyTestManager.testResults.filter { it.third.contains("мс") }.size
+                                            val successfulStrategiesCount = StrategyTestManager.testResults.count { StrategyTester.isSuccessfulStatus(it.third) }
                                             val maxIndex = if (successfulStrategiesCount > 0) successfulStrategiesCount - 1 else presets.size - 1
                                             if (currentTestIndex >= maxIndex) {
                                                 saveNoStrategiesWorked(true)
@@ -2167,7 +2208,7 @@ fun YoutubeTab(
                             val switchHighlighted = switchPressed || switchHovered || switchFocused
 
                             val switchBgColor by animateColorAsState(
-                                targetValue = if (switchHighlighted) Color(0xFF38383A) else Color(0xFF242426),
+                                targetValue = if (switchHighlighted) Color(0xFF383838) else Color(0xFF242424),
                                 animationSpec = tween(150),
                                 label = ""
                             )
@@ -2223,6 +2264,42 @@ fun YoutubeTab(
             StrategyTestManager.renameStrategy(context, strategy, editNameText)
             StrategyTestManager.updateNotes(context, strategy, editNotesText)
             editingStrategy = null
+        },
+        commandText = editingStrategy?.let { StrategyTester.buildRunnableCommand(it) }
+    )
+
+        NetFixEditStrategySheet(
+        visible = isCreatingCustomStrategy,
+        onDismissRequest = { isCreatingCustomStrategy = false },
+        nameValue = customStrategyName,
+        onNameChange = { customStrategyName = it },
+        notesValue = "",
+        onNotesChange = { },
+        showNotes = false,
+        commandText = customStrategyCommand,
+        onCommandChange = {
+            customStrategyCommand = it
+            customStrategyError = null
+        },
+        commandError = customStrategyError,
+        title = "Своя стратегия",
+        subtitle = "Вставьте строку конфига из ByeByeDPI или скопированную из NetFix. После сохранения NetFix сразу её проверит",
+        onSave = {
+            if (customStrategyCommand.isBlank()) {
+                isCreatingCustomStrategy = false
+            } else {
+                val strategyName = customStrategyName.ifBlank { "Своя стратегия" }
+                when (val result = StrategyTestManager.addCustomStrategy(context, customStrategyCommand, strategyName, null)) {
+                    is StrategyTestManager.AddCustomStrategyResult.Added -> {
+                        isCreatingCustomStrategy = false
+                        StrategyTestManager.checkCustomStrategy(context, result.command)
+                    }
+                    is StrategyTestManager.AddCustomStrategyResult.AlreadyExists ->
+                        customStrategyError = "Такая стратегия уже есть в списке: ${result.existingName}"
+                    StrategyTestManager.AddCustomStrategyResult.Invalid ->
+                        customStrategyError = "Это не похоже на конфиг ByeDPI. Он начинается с параметра, например -o1 -a1"
+                }
+            }
         }
     )
 
@@ -2300,7 +2377,7 @@ fun YoutubeTab(
                 showVpnDeniedDialog = false
                 val intent = android.net.VpnService.prepare(context)
                 if (intent != null) {
-                    vpnLauncher.launch(intent)
+                    vpnLauncher.launchVpnConsentSafely(intent)
                 } else {
                     startAll()
                     if (!isSetupComplete && testStarted) {
@@ -2359,5 +2436,65 @@ fun YoutubeTab(
     )
             }
         }
+    }
+}
+
+private const val MANUAL_STRATEGY_LIMIT = 20
+
+@Composable
+private fun AddCustomStrategyButton(onClick: () -> Unit) {
+    val haptics = com.rupleide.netfix.ui.components.rememberNetFixHaptics()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val isHighlighted = isPressed || isHovered || isFocused
+
+    val backgroundColor by animateColorAsState(
+        targetValue = if (isHighlighted) Color(0xFF383838) else Color(0xFF242424),
+        animationSpec = tween(150),
+        label = "addCustomStrategyBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (isFocused || isPressed) Color.White else Color(0x1AFFFFFF),
+        animationSpec = tween(150),
+        label = "addCustomStrategyBorder"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (isHighlighted) Color.White else Color(0xFFA1A1AA),
+        animationSpec = tween(150),
+        label = "addCustomStrategyContent"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(backgroundColor)
+            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {
+                    haptics(com.rupleide.netfix.ui.components.NetFixHaptic.Tap)
+                    onClick()
+                }
+            )
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Add,
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = "Добавить свою стратегию",
+            color = contentColor,
+            fontWeight = FontWeight.Medium,
+            fontSize = 14.sp
+        )
     }
 }

@@ -1,5 +1,15 @@
 package com.rupleide.netfix
 
+import com.rupleide.netfix.ui.components.NfTvRailItem
+import com.rupleide.netfix.ui.components.NfTvScaffold
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.imePadding
+import com.rupleide.netfix.ui.components.ProvideTvEnvironment
+import com.rupleide.netfix.ui.components.isImeShown
+import com.rupleide.netfix.ui.components.isTvLayoutEnabled
+import com.rupleide.netfix.ui.components.uiShowTelegram
+import com.rupleide.netfix.ui.components.uiShowYoutube
+import com.rupleide.netfix.ui.components.safeBarsWithoutKeyboard
 import android.os.Bundle
 import android.content.Intent
 import android.net.Uri
@@ -116,10 +126,27 @@ import androidx.compose.animation.core.spring
 import androidx.compose.ui.graphics.drawscope.Stroke
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val permission = android.Manifest.permission.POST_NOTIFICATIONS
+        val isGranted = androidx.core.content.ContextCompat.checkSelfPermission(this, permission) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!isGranted) {
+            notificationPermissionLauncher.launch(permission)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         com.rupleide.netfix.core.debug.AppDebugManager.init(this)
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) {
+            handleTileStartRequest(intent)
+            requestNotificationPermissionIfNeeded()
+        }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(
                 android.graphics.Color.TRANSPARENT
@@ -133,25 +160,28 @@ class MainActivity : ComponentActivity() {
             val storedVal = prefs.getBoolean("onboarding_completed", false)
             Log.e("NetFixDebug", "MainActivity: onboarding_completed read as: $storedVal")
             var onboardingCompleted by remember { mutableStateOf(storedVal) }
-            val isSmartTv = prefs.getBoolean("is_smart_tv", false)
+            var tvLayout by remember { mutableStateOf(prefs.isTvLayoutEnabled(context, storedVal)) }
             var setupDone by remember { mutableStateOf(prefs.getBoolean("wizard_is_setup_complete", false)) }
-            var wantsYoutubeBypass by remember { mutableStateOf(prefs.getBoolean("wants_youtube_bypass", true)) }
-            var telegramProxyEnabledByUser by remember { mutableStateOf(prefs.getBoolean("telegram_proxy_enabled_by_user", true)) }
+            var wantsYoutubeBypass by remember { mutableStateOf(prefs.uiShowYoutube()) }
+            var telegramProxyEnabledByUser by remember { mutableStateOf(prefs.uiShowTelegram()) }
             var selectedTab by remember { mutableIntStateOf(0) }
 
             androidx.compose.runtime.DisposableEffect(prefs) {
                 val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+                    if (key == "is_smart_tv") {
+                        tvLayout = sharedPreferences.isTvLayoutEnabled(context, onboardingCompleted)
+                    }
                     if (key == "wizard_is_setup_complete") {
                         setupDone = sharedPreferences.getBoolean("wizard_is_setup_complete", false)
                     }
-                    if (key == "wants_youtube_bypass") {
-                        wantsYoutubeBypass = sharedPreferences.getBoolean("wants_youtube_bypass", true)
+                    if (key == "wants_youtube_bypass" || key == "ui_show_youtube") {
+                        wantsYoutubeBypass = sharedPreferences.uiShowYoutube()
                         if (!wantsYoutubeBypass && selectedTab == 2) {
                             selectedTab = 0
                         }
                     }
-                    if (key == "telegram_proxy_enabled_by_user") {
-                        telegramProxyEnabledByUser = sharedPreferences.getBoolean("telegram_proxy_enabled_by_user", true)
+                    if (key == "telegram_proxy_enabled_by_user" || key == "ui_show_telegram") {
+                        telegramProxyEnabledByUser = sharedPreferences.uiShowTelegram()
                         if (!telegramProxyEnabledByUser && selectedTab == 1) {
                             selectedTab = 0
                         }
@@ -163,8 +193,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(tvLayout) {
+                (context as? android.app.Activity)?.requestedOrientation = if (tvLayout) {
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                } else {
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
+            }
+
             val tabFocusRequesters = remember { List(5) { FocusRequester() } }
             val navBarFocusRequester = remember { FocusRequester() }
+            val tabNavFocus = if (tvLayout) FocusRequester.Default else navBarFocusRequester
             val allNavItems = listOf(
                 0 to NavItem("Главная", R.drawable.ic_power),
                 1 to NavItem("Прокси", R.drawable.ic_telegram),
@@ -184,25 +223,16 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(selectedTab) {
                 com.rupleide.netfix.data.onNavigateToTab = { index ->
-                    val isVpnRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
-                    if (isVpnRunning && index in listOf(1, 3)) {
-                        android.widget.Toast.makeText(
-                            context,
-                            "Выключите обход, чтобы изменять настройки",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        val tabName = when (index) {
-                            0 -> "Главная"
-                            1 -> "Telegram"
-                            2 -> "YouTube"
-                            3 -> "Настройки"
-                            4 -> "О программе"
-                            else -> "Вкладка $index"
-                        }
-                        com.rupleide.netfix.core.debug.AppDebugManager.log("Переход на вкладку: $tabName")
-                        selectedTab = index
+                    val tabName = when (index) {
+                        0 -> "Главная"
+                        1 -> "Telegram"
+                        2 -> "YouTube"
+                        3 -> "Настройки"
+                        4 -> "О программе"
+                        else -> "Вкладка $index"
                     }
+                    com.rupleide.netfix.core.debug.AppDebugManager.log("Переход на вкладку: $tabName")
+                    selectedTab = index
                 }
             }
 
@@ -220,18 +250,16 @@ class MainActivity : ComponentActivity() {
                 }
                 val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
                 com.rupleide.netfix.data.performanceModeGlobal = prefs.getBoolean("performance_mode", false)
-                if (prefs.getBoolean("service_enabled", false)) {
-                    prefs.edit().putBoolean("econom_mode", false).apply()
-                    com.rupleide.netfix.service.WatchdogWorker.schedulePeriodicWork(context)
-                    com.rupleide.netfix.service.WatchdogReceiver.scheduleWatchdogAlarm(context)
-                }
                 val autoConnect = prefs.getBoolean("auto_connect_on_start", false)
                 if (autoConnect) {
                     val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
                     val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                    prefs.edit().putBoolean("service_enabled", true).apply()
+                    val youtubeReadyToStart = wantsYoutube && android.net.VpnService.prepare(context) == null
+                    if (youtubeReadyToStart || wantsTelegram) {
+                        prefs.edit().putBoolean("service_enabled", true).apply()
+                    }
                     if (wantsYoutube) {
-                        if (android.net.VpnService.prepare(context) == null) {
+                        if (youtubeReadyToStart) {
                             com.rupleide.netfix.core.dpibypass.ServiceManager.start(context, com.rupleide.netfix.data.Mode.VPN)
                         }
                     }
@@ -275,6 +303,7 @@ class MainActivity : ComponentActivity() {
             }
 
             NetFixMobileTheme {
+                ProvideTvEnvironment(tvLayout) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (!onboardingCompleted) {
                         OnboardingFlow(
@@ -283,23 +312,26 @@ class MainActivity : ComponentActivity() {
                                 prefs.edit().putBoolean("onboarding_completed", true).commit()
                                 Log.e("NetFixDebug", "MainActivity: onboarding_completed applied, memory cache is: " + prefs.getBoolean("onboarding_completed", false))
                                 onboardingCompleted = true
-                                wantsYoutubeBypass = prefs.getBoolean("wants_youtube_bypass", true)
-                                telegramProxyEnabledByUser = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
+                                tvLayout = prefs.isTvLayoutEnabled(context, true)
+                                wantsYoutubeBypass = prefs.uiShowYoutube()
+                                telegramProxyEnabledByUser = prefs.uiShowTelegram()
                                 selectedTab = 0
                             }
                         )
                     } else {
+                        androidx.activity.compose.BackHandler(enabled = tvLayout && selectedTab != 0) {
+                            selectedTab = 0
+                        }
                         Scaffold(
                             modifier = Modifier.fillMaxSize(),
                             containerColor = Color(0xFF161616)
                         ) { innerPadding ->
                             val density = androidx.compose.ui.platform.LocalDensity.current
-                            val safeBottomInset = with(density) { WindowInsets.safeDrawing.getBottom(density).toDp() }
-                            val navOverlayReserve = safeBottomInset + 86.dp
+                            val safeBottomInset = with(density) { WindowInsets.safeBarsWithoutKeyboard.getBottom(density).toDp() }
+                            val navOverlayReserve = safeBottomInset + com.rupleide.netfix.ui.components.navBarReserve()
 
-                            Box(
-                                modifier = Modifier.fillMaxSize()
-                            ) {
+                            val imeShownOnTv = tvLayout && isImeShown()
+                            val tabContent: @Composable () -> Unit = {
                                 AnimatedContent(
                                     targetState = selectedTab,
                                     modifier = Modifier
@@ -323,15 +355,43 @@ class MainActivity : ComponentActivity() {
                                     when (tab) {
                                         0 -> MainTab(
                                             focusRequester = tabFocusRequesters[0],
-                                            navBarFocusRequester = navBarFocusRequester,
+                                            navBarFocusRequester = tabNavFocus,
                                             playEntranceAnimation = mainContentVisible && selectedTab == 0
                                         )
-                                        1 -> TgProxyTab(focusRequester = tabFocusRequesters[1], navBarFocusRequester = navBarFocusRequester)
-                                        2 -> YoutubeTab(focusRequester = tabFocusRequesters[2], navBarFocusRequester = navBarFocusRequester)
-                                        3 -> SettingsTab(focusRequester = tabFocusRequesters[3], navBarFocusRequester = navBarFocusRequester)
-                                        4 -> InfoTab(focusRequester = tabFocusRequesters[4], navBarFocusRequester = navBarFocusRequester)
+                                        1 -> TgProxyTab(focusRequester = tabFocusRequesters[1], navBarFocusRequester = tabNavFocus)
+                                        2 -> YoutubeTab(focusRequester = tabFocusRequesters[2], navBarFocusRequester = tabNavFocus)
+                                        3 -> SettingsTab(focusRequester = tabFocusRequesters[3], navBarFocusRequester = tabNavFocus)
+                                        4 -> InfoTab(focusRequester = tabFocusRequesters[4], navBarFocusRequester = tabNavFocus)
                                     }
                                 }
+                            }
+
+                            val youtubeBadge = onboardingCompleted && wantsYoutubeBypass && !setupDone && !com.rupleide.netfix.core.dpibypass.StrategyTestManager.hasScanResults()
+
+                            if (tvLayout) {
+                                Box(modifier = Modifier.fillMaxSize().imePadding()) {
+                                    NfTvScaffold(
+                                        items = activeNavItems.map { (index, item) ->
+                                            NfTvRailItem(
+                                                key = index,
+                                                label = item.label,
+                                                iconRes = item.iconRes,
+                                                badge = (index == 2 && youtubeBadge) || (index == 4 && com.rupleide.netfix.data.updateInfoGlobal != null)
+                                            )
+                                        },
+                                        selected = selectedTab,
+                                        onSelect = { selectedTab = it },
+                                        contentFocus = tabFocusRequesters[selectedTab],
+                                        railFocus = navBarFocusRequester
+                                    ) {
+                                        tabContent()
+                                    }
+                                }
+                            } else {
+                            Box(
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                tabContent()
 
                                 val navBarProgress = rememberEntranceProgress(
                                     play = mainContentVisible,
@@ -349,7 +409,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                 ) {
                                     androidx.compose.animation.AnimatedVisibility(
-                                        visible = !com.rupleide.netfix.data.isActionSheetVisibleGlobal,
+                                        visible = !com.rupleide.netfix.data.isActionSheetVisibleGlobal && !imeShownOnTv,
                                         enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f))) +
                                                 androidx.compose.animation.slideInVertically(
                                                     animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.72f, stiffness = 160f)
@@ -365,26 +425,20 @@ class MainActivity : ComponentActivity() {
                                             selectedTab = selectedTab,
                                             tabFocusRequester = tabFocusRequesters[selectedTab],
                                             navBarFocusRequester = navBarFocusRequester,
-                                            showYoutubeAlert = onboardingCompleted && wantsYoutubeBypass && !setupDone,
+                                            showYoutubeAlert = onboardingCompleted && wantsYoutubeBypass && !setupDone && !com.rupleide.netfix.core.dpibypass.StrategyTestManager.hasScanResults(),
                                             onTabSelected = { originalIndex ->
-                                                val isVpnRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
-                                                if (isVpnRunning && originalIndex in listOf(1, 3)) {
-                                                    android.widget.Toast.makeText(
-                                                        context,
-                                                        "Выключите обход, чтобы изменять настройки",
-                                                        android.widget.Toast.LENGTH_SHORT
-                                                    ).show()
-                                                } else {
-                                                    selectedTab = originalIndex
-                                                }
+                                                selectedTab = originalIndex
                                             },
                                             modifier = Modifier
                                         )
                                     }
                                 }
                             }
+                            }
                         }
                     }
+
+                    com.rupleide.netfix.ui.components.VpnConsentUnavailableSheet()
 
                     if (showSplash) {
                         NetFixSplashScreen(onDismiss = {
@@ -396,8 +450,24 @@ class MainActivity : ComponentActivity() {
                         mainContentVisible = true
                     }
                 }
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleTileStartRequest(intent)
+    }
+
+    private fun handleTileStartRequest(intent: Intent?) {
+        if (intent == null || intent.action != com.rupleide.netfix.data.START_FROM_TILE_ACTION) return
+        val isRelaunchFromRecents = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (isRelaunchFromRecents) return
+        intent.action = Intent.ACTION_MAIN
+        com.rupleide.netfix.data.tileStartRequestedGlobal = true
+        com.rupleide.netfix.data.onNavigateToTab?.invoke(0)
     }
 
     companion object {
@@ -420,12 +490,14 @@ private fun ProxyNavigationBar(
     showYoutubeAlert: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val navigationHaptics = com.rupleide.netfix.ui.components.rememberNetFixHaptics()
     val selectedColor = Color(0xFFF4F4F5)
     val unselectedColor = Color(0xFF71717A)
     val shellColor = Color(0xFF1E1E1E)
     val shellBorder = Color(0x22FFFFFF)
     val indicatorColor = Color(0xFF2D2D30)
 
+    val tv = com.rupleide.netfix.ui.components.LocalIsTv.current
     val selectedActiveIndex = activeNavItems.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0)
     val indicatorIndex = remember { androidx.compose.animation.core.Animatable(selectedActiveIndex.toFloat()) }
     val dragVisualIndex = indicatorIndex.value
@@ -446,9 +518,9 @@ private fun ProxyNavigationBar(
 
     BoxWithConstraints(
         modifier = modifier
-            .widthIn(max = 550.dp)
+            .widthIn(max = if (tv) 720.dp else 550.dp)
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+            .windowInsetsPadding(WindowInsets.safeBarsWithoutKeyboard.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
             .padding(horizontal = 22.dp, vertical = 12.dp)
     ) {
         val trackPadding = 8.dp
@@ -509,6 +581,9 @@ private fun ProxyNavigationBar(
                                 .clip(RoundedCornerShape(22.dp))
                                 .background(tabBgColor)
                                 .then(
+                                    if (tv && isFocused) Modifier.border(2.dp, Color.White, RoundedCornerShape(22.dp)) else Modifier
+                                )
+                                .then(
                                     if (originalIndex == selectedTab) Modifier.focusRequester(navBarFocusRequester) else Modifier
                                 )
                                 .focusProperties {
@@ -517,7 +592,10 @@ private fun ProxyNavigationBar(
                                 .clickable(
                                     interactionSource = interactionSource,
                                     indication = null,
-                                    onClick = { onTabSelected(originalIndex) }
+                                    onClick = {
+                                        navigationHaptics(com.rupleide.netfix.ui.components.NetFixHaptic.Tap)
+                                        onTabSelected(originalIndex)
+                                    }
                                 ),
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -528,7 +606,7 @@ private fun ProxyNavigationBar(
                                 Icon(
                                     painter = painterResource(item.iconRes),
                                     contentDescription = item.label,
-                                    modifier = Modifier.size(22.dp),
+                                    modifier = Modifier.size(if (tv) 26.dp else 22.dp),
                                     tint = tabIconColor
                                 )
                                 if (originalIndex == 4 && com.rupleide.netfix.data.updateInfoGlobal != null) {
@@ -553,7 +631,7 @@ private fun ProxyNavigationBar(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = item.label,
-                                style = MaterialTheme3TypeOverride.labelSmall,
+                                style = if (tv) MaterialTheme3TypeOverride.labelSmall.copy(fontSize = 12.sp, lineHeight = 15.sp) else MaterialTheme3TypeOverride.labelSmall,
                                 fontWeight = if (emphasis > 0.55f) FontWeight.SemiBold else FontWeight.Medium,
                                 color = tabIconColor,
                                 maxLines = 1

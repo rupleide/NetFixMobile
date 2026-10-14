@@ -1,5 +1,6 @@
 package com.rupleide.netfix.ui.components
 
+import androidx.compose.foundation.layout.imePadding
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
@@ -38,6 +39,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -88,7 +90,13 @@ fun NetFixEditStrategySheet(
     onNameChange: (String) -> Unit,
     notesValue: String,
     onNotesChange: (String) -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    commandText: String? = null,
+    onCommandChange: ((String) -> Unit)? = null,
+    commandError: String? = null,
+    showNotes: Boolean = true,
+    title: String = "Настройка стратегии",
+    subtitle: String = "Измените название и заметку для этой стратегии обхода"
 ) {
     val context = LocalContext.current
     val sharedPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", 0) }
@@ -101,12 +109,21 @@ fun NetFixEditStrategySheet(
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
     val frozenNavBarPadding = remember { navBarPadding }
     val transition = updateTransition(targetState = visible, label = "EditStrategyTransition")
+    val nameAtOpen = remember(visible) { nameValue }
+    val notesAtOpen = remember(visible) { notesValue }
+    val commandAtOpen = remember(visible) { commandText }
+    val hasChanges = nameValue != nameAtOpen ||
+        notesValue != notesAtOpen ||
+        (onCommandChange != null && commandText != commandAtOpen)
+    var lastShownCommandText by remember { mutableStateOf(commandText) }
+    if (commandText != null) {
+        lastShownCommandText = commandText
+    }
 
     val saveFocusRequester = remember { FocusRequester() }
-    val cancelFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(visible) {
-        if (visible) {
+        if (visible && isTv) {
             kotlinx.coroutines.delay(150)
             try {
                 saveFocusRequester.requestFocus()
@@ -162,13 +179,14 @@ fun NetFixEditStrategySheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .background(Color.Black.copy(alpha = nfRegisterScrim(scrimAlpha)))
                 .pointerInput(onDismissRequest) { detectTapGestures(onTap = { onDismissRequest() }) },
             contentAlignment = if (useTvLayout) Alignment.Center else Alignment.BottomCenter
         ) {
             Box(
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
+                    .imePadding()
                     .padding(frozenNavBarPadding)
                     .padding(bottom = if (useTvLayout) 0.dp else 16.dp)
                     .widthIn(max = if (useTvLayout) 640.dp else 500.dp)
@@ -222,9 +240,9 @@ fun NetFixEditStrategySheet(
 
                             Spacer(Modifier.height(16.dp))
 
-                            Text(text = "Настройка стратегии", color = EditTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                            Text(text = title, color = EditTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                             Spacer(Modifier.height(8.dp))
-                            Text(text = "Измените название и заметку для этой стратегии обхода", color = EditTextSecondary, fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 16.sp)
+                            Text(text = subtitle, color = EditTextSecondary, fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 16.sp)
                         }
 
                         Column(
@@ -241,25 +259,25 @@ fun NetFixEditStrategySheet(
                                 modifier = Modifier.fillMaxWidth()
                             )
 
-                            NetFixTextField(
-                                value = notesValue,
-                                onValueChange = onNotesChange,
-                                label = "Заметка",
-                                placeholder = "Заметка/комментарий к стратегии",
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            if (showNotes) {
+                                NetFixTextField(
+                                    value = notesValue,
+                                    onValueChange = onNotesChange,
+                                    label = "Заметка",
+                                    placeholder = "Заметка/комментарий к стратегии",
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            lastShownCommandText?.let { StrategyCommandField(it, onCommandChange, commandError) }
 
                             Spacer(Modifier.height(8.dp))
 
-                            EditSaveButton(
-                                focusRequester = saveFocusRequester,
-                                onClick = onSave
-                            )
-                            Spacer(Modifier.height(4.dp))
                             EditCloseButton(
-                                label = "Отмена",
-                                focusRequester = cancelFocusRequester,
-                                onClick = onDismissRequest
+                                label = "Готово",
+                                focusRequester = saveFocusRequester,
+                                hasChanges = hasChanges,
+                                onClick = onSave
                             )
                         }
                     }
@@ -267,8 +285,10 @@ fun NetFixEditStrategySheet(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Column(
                             modifier = Modifier
+                                .weight(1f, fill = false)
                                 .fillMaxWidth()
                                 .background(EditSheetBg, RoundedCornerShape(28.dp))
+                                .verticalScroll(rememberScrollState())
                                 .padding(top = 24.dp, start = 22.dp, end = 22.dp, bottom = 22.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -300,9 +320,9 @@ fun NetFixEditStrategySheet(
                                 modifier = Modifier.graphicsLayer { alpha = headerProgress },
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Text(text = "Настройка стратегии", color = EditTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                Text(text = title, color = EditTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                                 Spacer(Modifier.height(6.dp))
-                                Text(text = "Измените название и заметку для этой стратегии обхода", color = EditTextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                Text(text = subtitle, color = EditTextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center)
                             }
 
                             Spacer(Modifier.height(20.dp))
@@ -321,20 +341,18 @@ fun NetFixEditStrategySheet(
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
-                                NetFixTextField(
-                                    value = notesValue,
-                                    onValueChange = onNotesChange,
-                                    label = "Заметка",
-                                    placeholder = "Заметка/комментарий к стратегии",
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                if (showNotes) {
+                                    NetFixTextField(
+                                        value = notesValue,
+                                        onValueChange = onNotesChange,
+                                        label = "Заметка",
+                                        placeholder = "Заметка/комментарий к стратегии",
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
 
-                                Spacer(Modifier.height(4.dp))
+                                lastShownCommandText?.let { StrategyCommandField(it, onCommandChange, commandError) }
 
-                                EditSaveButton(
-                                    focusRequester = saveFocusRequester,
-                                    onClick = onSave
-                                )
                             }
                         }
 
@@ -342,9 +360,10 @@ fun NetFixEditStrategySheet(
 
                         Box(modifier = Modifier.graphicsLayer { alpha = closeProgress; translationY = (1f - closeProgress) * 24f }) {
                             EditCloseButton(
-                                label = "Отмена",
-                                focusRequester = cancelFocusRequester,
-                                onClick = onDismissRequest
+                                label = "Готово",
+                                focusRequester = saveFocusRequester,
+                                hasChanges = hasChanges,
+                                onClick = onSave
                             )
                         }
                     }
@@ -355,70 +374,59 @@ fun NetFixEditStrategySheet(
 }
 
 @Composable
-private fun EditSaveButton(
-    focusRequester: FocusRequester,
-    onClick: () -> Unit
+private fun StrategyCommandField(
+    commandText: String,
+    onCommandChange: ((String) -> Unit)?,
+    commandError: String?
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    var isFocused by remember { mutableStateOf(false) }
-    val haptics = LocalHapticFeedback.current
-
-    val finalActive = isPressed || isFocused
-
-    val pressScale by animateFloatAsState(targetValue = if (isPressed) 0.98f else 1f, animationSpec = EditPressSpring, label = "press")
-    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF38383A) else EditSheetCard, animationSpec = tween(150), label = "bg")
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            isPressed -> Color.White
-            isFocused -> Color(0x33FFFFFF)
-            else -> Color.Transparent
-        },
-        animationSpec = tween(150),
-        label = "border"
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusRequester(focusRequester)
-            .onFocusChanged { isFocused = it.isFocused }
-            .focusable()
-            .onKeyEvent { keyEvent ->
-                val isDpadClick = keyEvent.key == Key.DirectionCenter || keyEvent.key == Key.Enter
-                if (isDpadClick && keyEvent.type == KeyEventType.KeyUp) {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onClick()
-                    true
-                } else {
-                    false
-                }
+    if (onCommandChange != null) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            NetFixTextField(
+                value = commandText,
+                onValueChange = onCommandChange,
+                label = "Строка конфига",
+                placeholder = "Вставьте конфиг из ByeByeDPI или NetFix",
+                singleLine = false,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (commandError != null) {
+                Text(text = commandError, color = Color(0xFFEF4444), fontSize = 12.sp, lineHeight = 16.sp)
             }
-            .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
-            .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onClick()
-            })
-            .background(borderColor, RoundedCornerShape(12.dp))
-            .padding(1.dp)
-            .background(bgColor, RoundedCornerShape(11.dp))
-            .padding(vertical = 14.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = "Сохранить",
-            color = EditTextPrimary,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
+        }
+        return
     }
+
+    val context = LocalContext.current
+    NetFixTextField(
+        value = commandText,
+        onValueChange = { },
+        label = "Строка конфига",
+        singleLine = false,
+        readOnly = true,
+        trailingIcon = {
+            androidx.compose.material3.IconButton(
+                onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("NetFix strategy", commandText))
+                    android.widget.Toast.makeText(context, "Конфиг скопирован", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.ContentCopy,
+                    contentDescription = "Скопировать конфиг",
+                    tint = EditTextSecondary
+                )
+            }
+        },
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
 private fun EditCloseButton(
     label: String,
     focusRequester: FocusRequester,
+    hasChanges: Boolean = false,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -429,7 +437,7 @@ private fun EditCloseButton(
     val finalActive = isPressed || isFocused
 
     val pressScale by animateFloatAsState(targetValue = if (isPressed) 0.97f else 1f, animationSpec = EditPressSpring, label = "cPress")
-    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF38383A) else EditSheetCard, animationSpec = tween(150), label = "cBg")
+    val bgColor by animateColorAsState(targetValue = if (finalActive) Color(0xFF383838) else EditSheetCard, animationSpec = tween(150), label = "cBg")
     val borderColor by animateColorAsState(
         targetValue = when {
             isPressed -> Color.White
@@ -467,6 +475,11 @@ private fun EditCloseButton(
             .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = label, color = if (finalActive) Color.White else EditTextSecondary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        val labelColor by animateColorAsState(
+            targetValue = if (isPressed || hasChanges) Color.White else EditTextSecondary,
+            animationSpec = tween(200),
+            label = "cLabel"
+        )
+        Text(text = label, color = labelColor, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
     }
 }

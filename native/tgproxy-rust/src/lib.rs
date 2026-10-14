@@ -160,7 +160,13 @@ pub extern "C" fn StopProxy() -> c_int {
     let rt = runtime();
     let pool = state.pool.clone();
     let handle = state.handle;
+    let cf_sockets = proxy::cf_pool_drain();
     rt.block_on(async move {
+        for ws in cf_sockets {
+            tokio::spawn(async move {
+                ws.close().await;
+            });
+        }
         linfo!("StopProxy: waiting for proxy tasks to finish (max 2s)");
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
         linfo!("StopProxy: closing pool connections");
@@ -175,6 +181,22 @@ pub extern "C" fn StopProxy() -> c_int {
 
     linfo!("StopProxy: exit");
     0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn FlushPools() {
+    let cf_sockets = proxy::cf_pool_drain();
+    let ws_pool = state_cell().lock().as_ref().map(|s| s.pool.clone());
+    runtime().spawn(async move {
+        for ws in cf_sockets {
+            ws.close().await;
+        }
+        if let Some(pool) = ws_pool {
+            pool.close_all().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        proxy::cf_pool_refill_active();
+    });
 }
 
 #[unsafe(no_mangle)]

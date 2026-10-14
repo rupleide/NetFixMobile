@@ -12,6 +12,7 @@ interface ProxyLibrary : Library {
     fun StartProxy(host: String, port: Int, dcIps: String, secret: String, verbose: Int): Int
     fun StopProxy(): Int
     fun SetPoolSize(size: Int)
+    fun FlushPools()
     fun SetCfProxyCacheDir(cacheDir: String)
     fun SetCfProxyConfig(enabled: Int, priority: Int, userDomain: String)
     fun GetSecretWithPrefix(): Pointer?
@@ -26,6 +27,13 @@ object NativeProxy {
 
     fun stopProxy(): Int {
         return ProxyLibrary.INSTANCE.StopProxy()
+    }
+
+    fun flushPools() {
+        try {
+            ProxyLibrary.INSTANCE.FlushPools()
+        } catch (_: UnsatisfiedLinkError) {
+        }
     }
 
     fun setPoolSize(size: Int) {
