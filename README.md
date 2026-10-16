@@ -41,7 +41,7 @@
 | Источник | Ссылка |
 |:---:|:---:|
 | 🚀 GitHub (рекомендуется) | **[Скачать последнюю версию](https://github.com/rupleide/NetFixMobile/releases/latest)** |
-| ☁️ Google Drive (зеркало) | **[Открыть зеркало](https://drive.google.com/file/d/1Bu3Knaf1lqTi24366fnxVY2xWD0RdvIj/view)** |
+| ☁️ Google Drive (зеркало) | **[Открыть зеркало](https://drive.google.com/file/d/1yiusNcDoUzroEkbQ8RnlBY98WyEfufIc/view)** |
 
 </div>
 
@@ -249,5 +249,5 @@ git clone https://github.com/rupleide/NetFixMobile.git
 
 <div align="center">
   <sub>Разработано с ❤️ для тех, кто хочет просто нажать на кнопку</sub><br/>
-  <sub>v1.0.3 · 2026</sub>
+  <sub>v1.0.4 · 2026</sub>
 </div>
