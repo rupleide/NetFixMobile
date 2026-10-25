@@ -3,12 +3,20 @@ package com.rupleide.netfix.core.dpibypass
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.rupleide.netfix.MainActivity
 import com.rupleide.netfix.data.RESUME_ACTION
 import com.rupleide.netfix.data.START_ACTION
+import com.rupleide.netfix.data.STARTED_BROADCAST
+import com.rupleide.netfix.data.STOPPED_BROADCAST
+import com.rupleide.netfix.data.FAILED_BROADCAST
+import com.rupleide.netfix.data.SENDER
+import com.rupleide.netfix.data.Sender
 import com.rupleide.netfix.core.tgproxy.TgProxyController
 import org.junit.Before
 import org.junit.After
@@ -91,13 +99,51 @@ class RootTransportTest {
     }
 
     @Suppress("DEPRECATION")
+    @Test fun disabledRootIgnoresRequestsWithNoActiveEngine() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.getIntExtra(SENDER, -1) == Sender.VPN.ordinal) events.add(intent.action.orEmpty())
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(STARTED_BROADCAST)
+            addAction(STOPPED_BROADCAST)
+            addAction(FAILED_BROADCAST)
+        }
+        val proxy = ByeDpiProxy()
+        var proxyThread: Thread? = null
+        ActivityScenario.launch(MainActivity::class.java).use {
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            try {
+                for (action in listOf(START_ACTION, RESUME_ACTION)) {
+                    context.startService(Intent(context, RootDpiService::class.java).setAction(action))
+                    instrumentation.waitForIdleSync()
+                    await("disabled root exits without an engine") {
+                        context.getSystemService(ActivityManager::class.java).getRunningServices(Int.MAX_VALUE)
+                            .none { service -> service.service.className == RootDpiService::class.java.name }
+                    }
+                    Thread.sleep(300)
+                    instrumentation.waitForIdleSync()
+                    assertTrue("disabled root must not publish DPI lifecycle events: $events", events.isEmpty())
+                }
+                proxyThread = launchProxy(proxy, 11183)
+                await("disabled root leaves the engine lease free", { socksResponds(11183) })
+            } finally {
+                context.unregisterReceiver(receiver)
+                context.stopService(Intent(context, RootDpiService::class.java))
+                proxy.stopProxy()
+                proxyThread?.join(2000)
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
     @Test fun disabledRootRejectsStartAndStaleResumeWithoutStoppingAnotherEngine() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
-        val preferences = context.getPreferences()
-        val keys = listOf("byedpi_root_mode", "auto_connect_on_start", "service_enabled")
-        val saved = keys.associateWith { if (preferences.contains(it)) preferences.getBoolean(it, false) else null }
-        preferences.edit().apply { keys.forEach { putBoolean(it, false) } }.commit()
         val proxy = ByeDpiProxy()
         val port = 11182
         val proxyThread = launchProxy(proxy, port)
@@ -120,9 +166,6 @@ class RootTransportTest {
             activity?.close()
             proxy.stopProxy()
             proxyThread.join(2000)
-            preferences.edit().apply {
-                saved.forEach { (key, value) -> if (value == null) remove(key) else putBoolean(key, value) }
-            }.commit()
         }
     }
 }
