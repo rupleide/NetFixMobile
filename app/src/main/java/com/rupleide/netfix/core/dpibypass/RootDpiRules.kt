@@ -51,7 +51,7 @@ internal data class RootDpiRules(
             val match = "-m owner --uid-owner $uid -o '$iface'"
             appendLine("iptables -w 5 -t nat -A $chain $match -p tcp -m multiport --dports 80,443 -j REDIRECT --to-ports $port")
             appendLine("iptables -w 5 -t filter -A $chain $match -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable")
-            // Pixel's stock kernel has no IPv6 NAT. Let clients fall back to IPv4/TCP.
+            // Some stock kernels have no IPv6 NAT. Let clients fall back to IPv4/TCP.
             appendLine("if [ \"\$ipv6\" = 1 ]; then")
             appendLine("ip6tables -w 5 -t filter -A $chain $match -p tcp -m multiport --dports 80,443 -j REJECT --reject-with tcp-reset")
             appendLine("ip6tables -w 5 -t filter -A $chain $match -p udp --dport 443 -j REJECT --reject-with icmp6-port-unreachable")

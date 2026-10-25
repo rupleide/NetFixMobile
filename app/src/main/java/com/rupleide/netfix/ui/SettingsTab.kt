@@ -643,6 +643,12 @@ fun SettingsTab(
                     icon = Icons.Default.Settings,
                     checked = rootMode,
                     onCheckedChange = { checked ->
+                        if (ServiceManager.isAlive) {
+                            android.widget.Toast.makeText(context,
+                                "Сначала остановите обход кнопкой в приложении или уведомлении",
+                                android.widget.Toast.LENGTH_LONG).show()
+                            return@NfSwitchRow
+                        }
                         BypassGuard.guarded(context) {
                             rootMode = checked
                             sharedPrefs.edit().putBoolean("byedpi_root_mode", checked).apply()

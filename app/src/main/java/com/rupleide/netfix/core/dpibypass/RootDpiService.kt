@@ -31,11 +31,18 @@ class RootDpiService : LifecycleService() {
     private var monitor: Job? = null
     @Volatile private var shouldRun = false
     private var interfaces = emptySet<String>()
+    private var ownsStatus = false
     private lateinit var connectivity: ConnectivityManager
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = refreshNetwork()
         override fun onLost(network: Network) = refreshNetwork()
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = refreshNetwork()
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refreshNetwork()
+    }
+    private val defaultCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = refreshNetwork()
+        override fun onLost(network: Network) = refreshNetwork()
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refreshNetwork()
     }
 
     companion object {
@@ -55,10 +62,16 @@ class RootDpiService : LifecycleService() {
             NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), callback
         )
+        connectivity.registerDefaultNetworkCallback(defaultCallback)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (!ServiceManager.rootMode(this)) {
+            shouldRun = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val notification = createNetFixNotification(this)
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NETFIX_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -68,17 +81,16 @@ class RootDpiService : LifecycleService() {
                 try {
                     when (intent?.action) {
                         START_ACTION, RESUME_ACTION -> {
-                            getSystemService(NotificationManager::class.java).cancel(3)
                             shouldRun = true
                             if (!isConnected) start()
                         }
                         PAUSE_ACTION -> {
                             shouldRun = false
                             stop()
-                            getSystemService(NotificationManager::class.java).notify(3,
+                            getSystemService(NotificationManager::class.java).notify(NETFIX_NOTIFICATION_ID,
                                 createPauseNotification(this@RootDpiService, NETFIX_NOTIFICATION_CHANNEL_ID,
-                                    R.string.notification_title, R.string.service_paused_text, RootDpiService::class.java))
-                            stopSelf()
+                                    R.string.notification_title, R.string.service_paused_text, RootDpiService::class.java,
+                                    createStopAllPendingIntent(this@RootDpiService)))
                         }
                         else -> { shouldRun = false; stop(); stopSelf() }
                     }
@@ -106,7 +118,9 @@ class RootDpiService : LifecycleService() {
     }.toSet()
 
     private suspend fun start() {
+        check(ServiceManager.rootMode(this)) { "Root mode is disabled" }
         check(!ByeDpiVpnService.isAlive) { "Stop NetFix VPN before starting root mode" }
+        ownsStatus = true
         val preferences = getPreferences()
         check(preferences.appListMode() == AppListMode.SelectedAppsOnly) {
             "Root mode requires selected applications"
@@ -175,15 +189,16 @@ class RootDpiService : LifecycleService() {
         // Remove interception before shutting the listener down.
         try { root?.close() } finally {
             root = null
-            proxy.stopProxy()
             val job = proxyJob
+            if (job != null) proxy.stopProxy()
             job?.cancel()
             if (withTimeoutOrNull(2000) { job?.join(); true } != true) {
                 proxy.jniForceClose()
                 check(withTimeoutOrNull(2000) { job?.join(); true } == true) { "ByeDPI did not stop" }
             }
             proxyJob = null
-            updateStatus(false)
+            if (ownsStatus) updateStatus(false)
+            ownsStatus = false
         }
     }
 
@@ -220,13 +235,14 @@ class RootDpiService : LifecycleService() {
 
     override fun onDestroy() {
         connectivity.unregisterNetworkCallback(callback)
+        connectivity.unregisterNetworkCallback(defaultCallback)
         // Closing the pipe triggers root-side cleanup even when this scope is cancelled.
         try { root?.disconnect() } catch (e: Exception) { Log.e("RootDpiService", "Closing root pipe failed", e) }
         root = null
         monitor?.cancel()
-        proxy.stopProxy()
+        if (proxyJob != null) proxy.stopProxy()
         proxyJob?.cancel()
-        updateStatus(false)
+        if (ownsStatus) updateStatus(false)
         isAlive = false
         super.onDestroy()
     }
