@@ -96,7 +96,7 @@ Java_com_rupleide_netfix_core_dpibypass_ByeDpiProxy_jniStopProxy(__attribute__((
 }
 
 JNIEXPORT jint JNICALL
-Java_com_rupleide_netfix_core_dpibypass_ByeDpiProxy_jniForceClose(__attribute__((unused)) JNIEnv *env, __attribute__((unused)) jobject thiz) {
+Java_com_rupleide_netfix_core_dpibypass_ByeDpiProxy_jniCloseProxy(__attribute__((unused)) JNIEnv *env, __attribute__((unused)) jobject thiz) {
     LOG(LOG_S, "closing server socket (fd: %d)", server_fd);
 
     if (close(server_fd) == -1) {

@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity() {
                 if (autoConnect) {
                     val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
                     val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                    val youtubeReadyToStart = wantsYoutube && android.net.VpnService.prepare(context) == null
+                    val youtubeReadyToStart = wantsYoutube && com.rupleide.netfix.core.dpibypass.ServiceManager.prepare(context) == null
                     if (youtubeReadyToStart || wantsTelegram) {
                         prefs.edit().putBoolean("service_enabled", true).apply()
                     }

@@ -265,7 +265,7 @@ fun SettingsTab(
         
         com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
         
-        context.stopService(android.content.Intent(context, com.rupleide.netfix.core.dpibypass.ByeDpiVpnService::class.java))
+        ServiceManager.stop(context)
         context.stopService(android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java))
         com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
         
@@ -292,6 +292,7 @@ fun SettingsTab(
     var isSelectedAppsOnlyMode by remember {
         mutableStateOf(sharedPrefs.appListMode() == com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly)
     }
+    var rootMode by remember { mutableStateOf(ServiceManager.rootMode(context)) }
     var tgProxyWakeLock by remember {
         mutableStateOf(sharedPrefs.getBoolean("tg_proxy_wakelock_enabled", false))
     }
@@ -633,6 +634,29 @@ fun SettingsTab(
                                 else -> "Telegram + YT"
                             }
                         )
+                    }
+                )
+                NfDivider()
+                NfSwitchRow(
+                    title = "Обход через root",
+                    subtitle = "Без VPN-слота · выбранные приложения · HTTP/HTTPS через IPv4. NetFix исключите из другого VPN.",
+                    icon = Icons.Default.Settings,
+                    checked = rootMode,
+                    onCheckedChange = { checked ->
+                        if (ServiceManager.isAlive) {
+                            android.widget.Toast.makeText(context,
+                                "Сначала остановите обход кнопкой в приложении или уведомлении",
+                                android.widget.Toast.LENGTH_LONG).show()
+                            return@NfSwitchRow
+                        }
+                        BypassGuard.guarded(context) {
+                            rootMode = checked
+                            sharedPrefs.edit().putBoolean("byedpi_root_mode", checked).apply()
+                            if (checked) {
+                                isSelectedAppsOnlyMode = true
+                                sharedPrefs.setAppListMode(com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly)
+                            }
+                        }
                     }
                 )
                 NfDivider()
@@ -1077,12 +1101,16 @@ fun SettingsTab(
             AppBypassScreen(
                 selectedOnly = isSelectedAppsOnlyMode,
                 onSelectedOnlyChange = { checked ->
+                    if (rootMode && !checked) {
+                        android.widget.Toast.makeText(context, "Root: выберите приложения для обхода", android.widget.Toast.LENGTH_LONG).show()
+                        return@AppBypassScreen
+                    }
                     isSelectedAppsOnlyMode = checked
                     sharedPrefs.setAppListMode(
                         if (checked) com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly
                         else com.rupleide.netfix.core.dpibypass.AppListMode.AllTraffic
                     )
-                    if (ByeDpiVpnService.isConnected) {
+                    if (ServiceManager.isConnected) {
                         ServiceManager.restart(context, Mode.VPN)
                     }
                 },

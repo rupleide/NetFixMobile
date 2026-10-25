@@ -308,7 +308,8 @@ fun createNetFixNotification(context: Context, vpnActive: Boolean = true): Notif
         .setSilent(true)
         .setOngoing(true)
         .setContentTitle("NetFix")
-        .setContentText(if (vpnActive) "Подключение защищено" else "Работает только прокси Telegram")
+        .setContentText(if (vpnActive && ServiceManager.rootMode(context)) "Обход DPI через root"
+            else if (vpnActive) "Подключение защищено" else "Работает только прокси Telegram")
         .setContentIntent(
             PendingIntent.getActivity(
                 context,
@@ -318,7 +319,7 @@ fun createNetFixNotification(context: Context, vpnActive: Boolean = true): Notif
             )
         )
     if (vpnActive && prefs.getBoolean("wants_youtube_bypass", true)) {
-        val pauseIntent = Intent(context, ByeDpiVpnService::class.java).apply { action = PAUSE_ACTION }
+        val pauseIntent = Intent(context, ServiceManager.serviceClass(context)).apply { action = PAUSE_ACTION }
         val pausePendingIntent = PendingIntent.getForegroundService(
             context, 1, pauseIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

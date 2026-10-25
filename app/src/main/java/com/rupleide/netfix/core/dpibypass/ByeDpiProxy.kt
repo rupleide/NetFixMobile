@@ -2,6 +2,8 @@ package com.rupleide.netfix.core.dpibypass
 
 class ByeDpiProxy {
     companion object {
+        private val ownershipLock = Any()
+        private var owner: ByeDpiProxy? = null
         init {
             System.loadLibrary("byedpi")
         }
@@ -9,11 +11,25 @@ class ByeDpiProxy {
 
     fun startProxy(preferences: ByeDpiProxyPreferences): Int {
         val args = prepareArgs(preferences)
-        return jniStartProxy(args)
+        synchronized(ownershipLock) {
+            if (owner != null) return -1
+            owner = this
+        }
+        try {
+            return jniStartProxy(args)
+        } finally {
+            synchronized(ownershipLock) { owner = null }
+        }
     }
 
     fun stopProxy(): Int {
-        return jniStopProxy()
+        return synchronized(ownershipLock) {
+            if (owner === this) jniStopProxy() else -1
+        }
+    }
+
+    fun jniForceClose(): Int = synchronized(ownershipLock) {
+        if (owner === this) jniCloseProxy() else -1
     }
 
     private fun prepareArgs(preferences: ByeDpiProxyPreferences): Array<String> =
@@ -24,5 +40,5 @@ class ByeDpiProxy {
 
     private external fun jniStartProxy(args: Array<String>): Int
     private external fun jniStopProxy(): Int
-    external fun jniForceClose(): Int
+    private external fun jniCloseProxy(): Int
 }

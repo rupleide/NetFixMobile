@@ -65,6 +65,14 @@
                 android:value="vpn" />
         </service>
 
+        <service android:name="com.rupleide.netfix.core.dpibypass.RootDpiService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local DPI bypass for selected applications using root firewall rules" />
+        </service>
+
         <service android:name="com.rupleide.netfix.core.tgproxy.TgProxyService"
             android:foregroundServiceType="specialUse"
             android:exported="false">
@@ -94,7 +102,7 @@
 
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.rupleide.netfix.fileprovider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data
