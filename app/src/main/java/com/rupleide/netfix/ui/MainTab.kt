@@ -541,7 +541,7 @@ fun MainTab(
             .apply()
         val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
         if (wantsYoutube) {
-            val intent = VpnService.prepare(context)
+            val intent = ServiceManager.prepare(context)
             if (intent != null) {
                 vpnLauncher.launchVpnConsentSafely(intent)
             } else {

@@ -33,7 +33,7 @@ class BootReceiver : BroadcastReceiver() {
         if (isBoot && autostart) {
             val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
             val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-            if (wantsYoutube && VpnService.prepare(appCtx) == null) {
+            if (wantsYoutube && ServiceManager.prepare(appCtx) == null) {
                 ServiceManager.start(appCtx, Mode.VPN)
             }
             if (wantsTelegram) {

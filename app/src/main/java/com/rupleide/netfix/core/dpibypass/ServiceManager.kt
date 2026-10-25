@@ -19,9 +19,20 @@ object ServiceManager {
     private val TAG: String = ServiceManager::class.java.simpleName
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    val isAlive: Boolean get() = ByeDpiVpnService.isAlive || RootDpiService.isAlive
+    val isConnected: Boolean get() = ByeDpiVpnService.isConnected || RootDpiService.isConnected
+
+    fun rootMode(context: Context): Boolean = context.getPreferences().getBoolean("byedpi_root_mode", false)
+
+    fun prepare(context: Context): Intent? =
+        if (rootMode(context)) null else android.net.VpnService.prepare(context)
+
+    fun serviceClass(context: Context): Class<*> =
+        if (rootMode(context)) RootDpiService::class.java else ByeDpiVpnService::class.java
+
     fun start(context: Context, mode: Mode): Boolean {
-        Log.i(TAG, "Starting VPN")
-        val intent = Intent(context, ByeDpiVpnService::class.java)
+        Log.i(TAG, "Starting DPI bypass")
+        val intent = Intent(context, serviceClass(context))
         intent.action = START_ACTION
         return try {
             ContextCompat.startForegroundService(context, intent)
@@ -33,14 +44,16 @@ object ServiceManager {
     }
 
     fun stop(context: Context) {
-        if (!ByeDpiVpnService.isAlive) return
-        Log.i(TAG, "Stopping VPN")
-        val intent = Intent(context, ByeDpiVpnService::class.java)
-        intent.action = STOP_ACTION
-        try {
-            context.startService(intent)
-        } catch (e: IllegalStateException) {
-            Log.w(TAG, "VPN stop request rejected: ${e.message}")
+        for (service in listOf(
+            ByeDpiVpnService::class.java to ByeDpiVpnService.isAlive,
+            RootDpiService::class.java to RootDpiService.isAlive,
+        )) {
+            if (!service.second) continue
+            try {
+                context.startService(Intent(context, service.first).setAction(STOP_ACTION))
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "DPI stop request rejected: ${e.message}")
+            }
         }
     }
 

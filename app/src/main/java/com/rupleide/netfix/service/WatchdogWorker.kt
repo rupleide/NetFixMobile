@@ -29,7 +29,7 @@ class WatchdogWorker(
         val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
         val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
 
-        val serviceDead = !ByeDpiVpnService.isConnected
+        val serviceDead = !ServiceManager.isConnected
         val tgDead = !TgProxyController.isRunning && !TgProxyController.isPortOpen(
             TgProxyController.DEFAULT_BIND_IP,
             TgProxyController.getPort(appCtx),
@@ -37,7 +37,7 @@ class WatchdogWorker(
         )
 
         if (wantsYoutube && serviceDead) {
-            if (VpnService.prepare(appCtx) == null) {
+            if (ServiceManager.prepare(appCtx) == null) {
                 ServiceManager.start(appCtx, Mode.VPN)
             }
         }
