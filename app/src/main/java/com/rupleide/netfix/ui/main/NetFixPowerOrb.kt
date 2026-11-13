@@ -1,6 +1,7 @@
 package com.rupleide.netfix.ui.main
 
 import com.rupleide.netfix.ui.components.nfTvMenuKey
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColor
@@ -348,10 +349,13 @@ fun NetFixPowerOrb(
 
 @Composable
 private fun ConnectionTimerText(color: Color) {
-    val elapsedLabel by produceState(initialValue = formatConnectionElapsed()) {
-        while (true) {
-            value = formatConnectionElapsed()
-            delay(1_000)
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val elapsedLabel by produceState(initialValue = formatConnectionElapsed(), lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                value = formatConnectionElapsed()
+                delay(1_000)
+            }
         }
     }
     Text(

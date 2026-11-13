@@ -1,6 +1,7 @@
 package com.rupleide.netfix.core.tgproxy
 
 import android.content.Context
+import com.rupleide.netfix.core.compat.CompatibilityManager
 import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import com.rupleide.netfix.core.dpibypass.ByeDpiVpnService
 import java.net.InetSocketAddress
@@ -12,7 +13,11 @@ object TgProxyController {
     const val DEFAULT_PORT = 1443
     const val DEFAULT_BIND_IP = "127.0.0.1"
     private const val NATIVE_ALREADY_RUNNING = -1
+    private const val NATIVE_BIND_FAILED = -3
+    private const val NEARBY_PORT_ATTEMPTS = 20
+    const val KEY_PORT_MOVED_FROM = "tgproxy_port_moved_from"
     private const val OWN_VPN_SETTLE_MS = 2_000L
+    private const val WATCHDOG_INTERVAL_MS = 30_000L
 
     private val nativeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "tgproxy-native").apply { isDaemon = true }
@@ -94,6 +99,28 @@ object TgProxyController {
         return getSharedPrefs(context).getBoolean("tgproxy_cf_priority", true)
     }
 
+    const val KEY_CF_PINNED_DOMAIN = "tgproxy_cf_pinned_domain"
+
+    fun pinnedCfDomain(context: Context): String? =
+        getSharedPrefs(context).getString(KEY_CF_PINNED_DOMAIN, null)?.takeIf { it.isNotBlank() }
+
+    fun pinCfDomain(context: Context, domain: String?) {
+        val appContext = context.applicationContext
+        val editor = getSharedPrefs(appContext).edit()
+        if (domain.isNullOrBlank()) editor.remove(KEY_CF_PINNED_DOMAIN) else editor.putString(KEY_CF_PINNED_DOMAIN, domain)
+        editor.apply()
+        Log.i("TgProxyController", if (domain.isNullOrBlank()) "Серверы Cloudflare: выбираются автоматически" else "Сервер Cloudflare закреплён: $domain")
+        if (!isRunning) return
+        nativeExecutor.execute {
+            try {
+                NativeProxy.setCfProxyConfig(isCfEnabled(appContext), isCfPriority(appContext), pinnedCfDomain(appContext).orEmpty())
+            } catch (e: Throwable) {
+                Log.e("TgProxyController", "Не удалось применить сервер Cloudflare", e)
+            }
+        }
+        restartCore(appContext)
+    }
+
     fun setCfPriority(context: Context, priority: Boolean) {
         getSharedPrefs(context).edit().putBoolean("tgproxy_cf_priority", priority).apply()
     }
@@ -130,10 +157,15 @@ object TgProxyController {
         onSuccess: () -> Unit,
         onError: () -> Unit
     ) {
+        if (com.rupleide.netfix.core.beta.BetaExpiry.isExpiredNow(context)) {
+            Log.w("TgProxyController", "Срок тестовой версии истёк, TG-прокси не запускается")
+            onError()
+            return
+        }
         val secretKey = getOrGenerateSecret(context)
         val cacheDir = context.cacheDir.absolutePath
         val dcIps = getDcIps(context)
-        val port = getPort(context)
+        var port = getPort(context)
         val poolSize = getPoolSize(context)
         val cfEnabled = isCfEnabled(context)
         val cfPriority = isCfPriority(context)
@@ -146,12 +178,27 @@ object TgProxyController {
             val started = try {
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir)
-                NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, "")
+                NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, pinnedCfDomain(appContext).orEmpty())
                 var code = NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
                 if (code == NATIVE_ALREADY_RUNNING && !isRunning) {
                     Log.w("TgProxyController", "Нативное ядро уже запущено, но не принадлежит нам: перезапускаю")
                     NativeProxy.stopProxy()
                     code = NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
+                }
+                if (code == NATIVE_BIND_FAILED && CompatibilityManager.freeProxyPortEnabled(getSharedPrefs(appContext))) {
+                    val busyPort = port
+                    val nearbyFreePort = findNearbyFreePort(busyPort)
+                    if (nearbyFreePort != null) {
+                        Log.w("TgProxyController", "Порт TG-прокси $busyPort занят, пробую $nearbyFreePort")
+                        code = NativeProxy.startProxy(DEFAULT_BIND_IP, nearbyFreePort, dcIps, secretKey, 1)
+                        if (code == 0) {
+                            port = nearbyFreePort
+                            getSharedPrefs(appContext).edit()
+                                .putInt("tgproxy_port", nearbyFreePort)
+                                .putInt(KEY_PORT_MOVED_FROM, busyPort)
+                                .apply()
+                        }
+                    }
                 }
                 Log.i("TgProxyController", "StartProxy вернул код $code")
                 code == 0 || (code == NATIVE_ALREADY_RUNNING && isRunning)
@@ -164,11 +211,87 @@ object TgProxyController {
                 Log.i("TgProxyController", "Порт TG-прокси $port успешно открыт")
                 isRunning = true
                 startForeignVpnMonitor(appContext)
+                startScreenMonitor(appContext)
+                startWatchdog(appContext)
                 com.rupleide.netfix.service.NetFixTileService.requestRefresh(appContext)
                 onSuccess()
             } else {
                 Log.e("TgProxyController", "Не удалось запустить TG-прокси на порту $port")
                 onError()
+            }
+        }
+    }
+
+    private fun findNearbyFreePort(busyPort: Int): Int? =
+        (1..NEARBY_PORT_ATTEMPTS)
+            .map { busyPort + it }
+            .filter { it <= 65535 }
+            .firstOrNull { com.rupleide.netfix.core.dpibypass.ProxyPortResolver.isPortFree(DEFAULT_BIND_IP, it) }
+
+    fun dismissPortMovedHint(context: Context) {
+        getSharedPrefs(context).edit().remove(KEY_PORT_MOVED_FROM).apply()
+    }
+
+    private val recoveryPlanner = TgProxyRecoveryPlanner()
+
+    @Volatile
+    private var watchdogThread: Thread? = null
+
+    @Synchronized
+    private fun startWatchdog(appContext: Context) {
+        if (watchdogThread?.isAlive == true) return
+        val thread = Thread({
+            while (isRunning && !Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(WATCHDOG_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (isRunning) syncPowerSaveWithScreen(appContext)
+                if (!isRunning || !CompatibilityManager.tgProxyWatchdogEnabled(getSharedPrefs(appContext))) continue
+                val sample = try {
+                    NativeProxy.getStats()?.let { TgProxyStatsSample.parse(it) }
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+                val action = synchronized(recoveryPlanner) { recoveryPlanner.onSample(sample, System.currentTimeMillis()) }
+                when (action) {
+                    TgProxyRecoveryAction.None -> Unit
+                    TgProxyRecoveryAction.FlushPools -> {
+                        Log.w("TgProxyController", "Прокси не пропускает трафик: сбрасываю пул соединений")
+                        NativeProxy.flushPools()
+                    }
+                    TgProxyRecoveryAction.RestartCore -> {
+                        if (pinnedCfDomain(appContext) != null) {
+                            Log.w("TgProxyController", "Прокси завис с закреплённым сервером Cloudflare: возвращаю автоматический выбор")
+                            pinCfDomain(appContext, null)
+                        } else {
+                            Log.w("TgProxyController", "Прокси по-прежнему завис: перезапускаю ядро")
+                            restartCore(appContext)
+                        }
+                    }
+                }
+            }
+        }, "tgproxy-watchdog")
+        thread.isDaemon = true
+        watchdogThread = thread
+        thread.start()
+    }
+
+    private fun restartCore(appContext: Context) {
+        nativeExecutor.execute {
+            try {
+                NativeProxy.stopProxy()
+                val code = NativeProxy.startProxy(
+                    DEFAULT_BIND_IP,
+                    getPort(appContext),
+                    getDcIps(appContext),
+                    getOrGenerateSecret(appContext),
+                    1
+                )
+                Log.i("TgProxyController", "Перезапуск ядра TG-прокси вернул код $code")
+            } catch (e: Throwable) {
+                Log.e("TgProxyController", "Не удалось перезапустить ядро TG-прокси", e)
             }
         }
     }
@@ -197,7 +320,7 @@ object TgProxyController {
             NativeProxy.setCfProxyConfig(false, false, "")
         } else {
             Log.i("TgProxyController", "Сторонний VPN отключён: возвращаю настройки Cloudflare")
-            NativeProxy.setCfProxyConfig(isCfEnabled(context), isCfPriority(context), "")
+            NativeProxy.setCfProxyConfig(isCfEnabled(context), isCfPriority(context), pinnedCfDomain(context).orEmpty())
         }
     }
 
@@ -217,6 +340,7 @@ object TgProxyController {
                 if (previous != null && previous != network) {
                     Log.i("TgProxyController", "Сеть сменилась: сбрасываю пул заранее открытых соединений")
                     NativeProxy.flushPools()
+                    synchronized(recoveryPlanner) { recoveryPlanner.onNetworkChanged() }
                 }
             }
 
@@ -249,12 +373,90 @@ object TgProxyController {
         defaultNetworkHasVpn = false
     }
 
+    private var screenMonitor: android.content.BroadcastReceiver? = null
+    private var screenMonitorContext: Context? = null
+
+    @Volatile
+    private var powerSaveApplied: Boolean? = null
+
+    private fun syncPowerSaveWithScreen(appContext: Context) {
+        val power = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        applyPowerSave(appContext, screenOn = power.isInteractive)
+    }
+
+    private fun applyPowerSave(appContext: Context, screenOn: Boolean) {
+        val saving = !screenOn && isRunning && CompatibilityManager.batterySaverEnabled(getSharedPrefs(appContext))
+        if (powerSaveApplied == saving) return
+        powerSaveApplied = saving
+        nativeExecutor.execute {
+            try {
+                NativeProxy.setPowerSave(saving)
+            } catch (e: Throwable) {
+                Log.w("TgProxyController", "Не удалось переключить экономию батареи", e)
+            }
+        }
+        Log.i("TgProxyController", if (saving) "Экран выключен: прокси не держит запасные соединения" else "Экран включён: прокси держит запасные соединения")
+    }
+
+    @Synchronized
+    private fun startScreenMonitor(appContext: Context) {
+        if (screenMonitor != null) return
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: android.content.Intent) {
+                when (intent.action) {
+                    android.content.Intent.ACTION_SCREEN_OFF -> applyPowerSave(appContext, screenOn = false)
+                    android.content.Intent.ACTION_SCREEN_ON -> applyPowerSave(appContext, screenOn = true)
+                }
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_OFF)
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+        }
+        try {
+            androidx.core.content.ContextCompat.registerReceiver(appContext, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+            screenMonitor = receiver
+            screenMonitorContext = appContext
+            val power = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!power.isInteractive) applyPowerSave(appContext, screenOn = false)
+        } catch (e: Exception) {
+            Log.w("TgProxyController", "Не удалось следить за экраном", e)
+        }
+    }
+
+    @Synchronized
+    private fun stopScreenMonitor() {
+        val receiver = screenMonitor ?: return
+        try {
+            screenMonitorContext?.unregisterReceiver(receiver)
+        } catch (_: Exception) {
+        }
+        screenMonitor = null
+        screenMonitorContext = null
+    }
+
+    fun restartAsync(context: Context, onDone: (Boolean) -> Unit = {}) {
+        if (!isRunning) {
+            onDone(false)
+            return
+        }
+        Log.i("TgProxyController", "Перезапуск TG-прокси с новыми настройками")
+        stop()
+        startAsync(context.applicationContext, onSuccess = { onDone(true) }, onError = { onDone(false) })
+    }
+
     fun stop() {
         Log.i("TgProxyController", "Остановка TG-прокси")
         isRunning = false
+        watchdogThread?.interrupt()
+        watchdogThread = null
+        synchronized(recoveryPlanner) { recoveryPlanner.onNetworkChanged() }
         stopForeignVpnMonitor()
+        stopScreenMonitor()
+        powerSaveApplied = null
         nativeExecutor.execute {
             try {
+                NativeProxy.setPowerSave(false)
                 NativeProxy.stopProxy()
             } catch (e: Throwable) {
                 Log.w("TgProxyController", "StopProxy failed", e)

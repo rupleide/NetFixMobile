@@ -162,7 +162,7 @@ class TgProxyService : LifecycleService() {
                     .edit()
                     .putBoolean("service_enabled", false)
                     .apply()
-                if (ByeDpiVpnService.isAlive) {
+                if (ServiceManager.isAlive) {
                     ServiceManager.stop(this)
                 }
             }

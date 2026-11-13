@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Copyright
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
@@ -108,10 +109,12 @@ private data class InfoItem(
     val title: String,
     val subtitle: String,
     val warm: Boolean = false,
-    val iconRes: Int? = null
+    val iconRes: Int? = null,
+    val newId: String? = null
 )
 
 private val infoItems = listOf(
+    InfoItem("whatsnew", Icons.Default.AutoAwesome, "Что нового", "Новое в этой версии и как этим пользоваться", newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.WHATS_NEW),
     InfoItem("about", Icons.Default.Info, "О приложении", "Что умеет NetFix Mobile"),
     InfoItem("channel", Icons.Default.Campaign, "Telegram-канал", "Новости и новые способы раньше всех", iconRes = R.drawable.ic_telegram),
     InfoItem("feedback", Icons.Default.Help, "Обратная связь", "Telegram или GitHub Issues"),
@@ -122,6 +125,7 @@ private val infoItems = listOf(
     InfoItem("license", Icons.Default.Copyright, "Лицензия и копирайты", "GPL-3.0 · ByeByeDPI, TG WS Proxy")
 )
 
+private const val WHATS_NEW_HIGHLIGHT_MS = 4500L
 private val warmTint = Color(0xFFFDBA74)
 private val warmBackground = Color(0x1FFB923C)
 
@@ -155,7 +159,59 @@ fun InfoTab(
     var activeQrLabel by remember { mutableStateOf<String?>(null) }
     var expandedId by remember { mutableStateOf<String?>(null) }
     var listTop by remember { mutableStateOf(0) }
+    var highlightedNewId by remember { mutableStateOf<String?>(null) }
     var showSbpSheet by remember { mutableStateOf(false) }
+    var showHelp by com.rupleide.netfix.data.helpScreenVisibleGlobal
+    val tvHelp = LocalIsTv.current
+    androidx.compose.runtime.DisposableEffect(tvHelp, showHelp) {
+        com.rupleide.netfix.data.isTvFullScreenOverlayGlobal = tvHelp && showHelp
+        onDispose { com.rupleide.netfix.data.isTvFullScreenOverlayGlobal = false }
+    }
+    com.rupleide.netfix.data.TrackActionSheetVisible(tvHelp && showHelp)
+    LaunchedEffect(com.rupleide.netfix.data.helpOpenRequestGlobal) {
+        val request = com.rupleide.netfix.data.helpOpenRequestGlobal ?: return@LaunchedEffect
+        com.rupleide.netfix.data.helpOpenRequestGlobal = null
+        val requested = com.rupleide.netfix.core.help.HelpSymptom.entries.firstOrNull { it.name == request }
+        if (requested != null) {
+            com.rupleide.netfix.core.help.HelpSession.resumeVerify(requested)
+            if (com.rupleide.netfix.core.help.HelpSession.symptom != requested) {
+                com.rupleide.netfix.core.help.HelpSession.choose(context, requested)
+            }
+        }
+        showHelp = true
+    }
+    LaunchedEffect(com.rupleide.netfix.data.whatsNewRequestGlobal) {
+        val request = com.rupleide.netfix.data.whatsNewRequestGlobal ?: return@LaunchedEffect
+        expandedId = "whatsnew"
+        highlightedNewId = request
+        delay(350)
+        scrollState.animateScrollTo(listTop)
+        com.rupleide.netfix.data.whatsNewRequestGlobal = null
+    }
+    LaunchedEffect(highlightedNewId) {
+        if (highlightedNewId != null) {
+            delay(WHATS_NEW_HIGHLIGHT_MS)
+            highlightedNewId = null
+        }
+    }
+    val openWhatsNewTarget: (com.rupleide.netfix.core.whatsnew.WhatsNewItem) -> Unit = { item ->
+        com.rupleide.netfix.data.requestSettingHighlight(
+            when (item.target) {
+                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsLaunch,
+                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsDns,
+                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsCompat -> com.rupleide.netfix.core.whatsnew.WhatsNew.settingRowFor(item.id)
+                else -> null
+            }
+        )
+        when (item.target) {
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.Help -> showHelp = true
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.YoutubeTab -> com.rupleide.netfix.data.onNavigateToTab?.invoke(2)
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsLaunch -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 0
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsDns -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 4
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsCompat -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 5
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.None -> Unit
+        }
+    }
     val appIcon = remember(context) {
         runCatching {
             context.packageManager.getApplicationIcon(context.packageName).toBitmap(256, 256).asImageBitmap()
@@ -204,7 +260,7 @@ fun InfoTab(
     val updateStatus = com.rupleide.netfix.data.updateStatusGlobal
     val updateProgress = com.rupleide.netfix.data.updateProgressGlobal
     val displayVersion = updateInfo?.let {
-        if (it.version.startsWith("v", ignoreCase = true)) it.version else "v${it.version}"
+        it.version.removePrefix("v").removePrefix("V")
     } ?: ""
     val isDownloading = updateProgress >= 0
     val isChecking = updateStatus == "Проверка..."
@@ -408,6 +464,25 @@ fun InfoTab(
                 .nfEnter(2)
                 .onGloballyPositioned { listTop = it.positionInParent().y.toInt() }
         ) {
+            if (tvHelp) {
+                NfRow(
+                    title = "Помощь",
+                    subtitle = "Что-то не работает? Проверю и починю",
+                    icon = Icons.Default.Help,
+                    iconTint = Nf.Text,
+                    onClick = { showHelp = true },
+                    newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.HELP,
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = Nf.TextSub,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                )
+                NfDivider()
+            }
             infoItems.forEachIndexed { index, item ->
                 if (index > 0) NfDivider()
                 val expanded = expandedId == item.id
@@ -424,8 +499,12 @@ fun InfoTab(
                     iconTint = if (item.warm) warmTint else Nf.Text,
                     iconModifier = if (item.id == "support") Modifier.nfHeartbeat() else Modifier,
                     iconBackground = if (item.warm) warmBackground else Color(0x0FFFFFFF),
+                    newId = item.newId,
                     modifier = if (index == infoItems.lastIndex) Modifier.focusProperties { down = navBarFocusRequester } else Modifier,
-                    onClick = { expandedId = if (expanded) null else item.id },
+                    onClick = {
+                        highlightedNewId = null
+                        expandedId = if (expanded) null else item.id
+                    },
                     trailing = {
                         Icon(
                             imageVector = Icons.Default.ChevronRight,
@@ -442,7 +521,20 @@ fun InfoTab(
                     enter = expandVertically(tween(260)) + fadeIn(tween(220)),
                     exit = shrinkVertically(tween(220)) + fadeOut(tween(150))
                 ) {
-                    InfoBody(id = item.id, onLink = handleLinkClick, onTelegram = openTelegram, onSbp = { showSbpSheet = true })
+                    if (item.id == "whatsnew") {
+                        Box(modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 12.dp)) {
+                            WhatsNewContent(
+                                highlightedId = highlightedNewId,
+                                onOpen = openWhatsNewTarget,
+                                isTargetAvailable = { target ->
+                                    target != com.rupleide.netfix.core.whatsnew.WhatsNewTarget.YoutubeTab ||
+                                        sharedPrefs.getBoolean("wants_youtube_bypass", true)
+                                }
+                            )
+                        }
+                    } else {
+                        InfoBody(id = item.id, onLink = handleLinkClick, onTelegram = openTelegram, onSbp = { showSbpSheet = true })
+                    }
                 }
             }
         }
@@ -469,6 +561,7 @@ fun InfoTab(
         NfCornerAura(Nf.Bright.copy(alpha = 0.056f))
         if (tv) {
             NfTvTwoPane(
+                modifier = Modifier.focusProperties { canFocus = !showHelp },
                 title = "Информация",
                 rightTitle = "Подробнее",
                 hideSectionTitles = true,
@@ -494,6 +587,32 @@ fun InfoTab(
             statusContent()
             detailsContent()
         }
+        }
+        if (!tv) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !showHelp && !com.rupleide.netfix.data.isActionSheetVisibleGlobal,
+                enter = androidx.compose.animation.scaleIn(tween(220)) + fadeIn(tween(180)),
+                exit = androidx.compose.animation.scaleOut(tween(180)) + fadeOut(tween(140)),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = navOverlayReserve + 16.dp)
+            ) {
+                val fabExpanded by androidx.compose.runtime.remember { androidx.compose.runtime.derivedStateOf { scrollState.value < 40 } }
+                com.rupleide.netfix.ui.help.HelpFab(
+                    expanded = fabExpanded,
+                    onClick = { showHelp = true }
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = showHelp,
+            enter = androidx.compose.animation.slideInHorizontally(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 3 } + fadeIn(tween(260)),
+            exit = androidx.compose.animation.slideOutHorizontally(tween(260, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 3 } + fadeOut(tween(200))
+        ) {
+            com.rupleide.netfix.ui.help.HelpScreen(
+                onBack = { showHelp = false },
+                modifier = Modifier.fillMaxSize()
+            )
         }
     }
 

@@ -255,35 +255,18 @@ fun NetFixUpdateSheet(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text(text = "Загрузка обновления...", color = SheetSubtext, fontSize = 14.sp, textAlign = TextAlign.Center)
-                                    LinearProgressIndicator(
-                                        progress = { downloadProgress },
-                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                        color = SheetText,
-                                        trackColor = Color(0xFF2A2A2A)
-                                    )
+                                    NfProgress(fraction = downloadProgress, color = SheetText, trackColor = Color(0xFF2A2A2A))
                                     Text(text = "${(downloadProgress * 100).toInt()}%", color = SheetText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                 }
                             } else {
                                 Column(
-                                    modifier = Modifier.height(120.dp).verticalScroll(rememberScrollState()),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = "Доступна новая версия NetFix. Рекомендуем обновиться.",
-                                        color = SheetSubtext, fontSize = 13.sp, textAlign = TextAlign.Center, lineHeight = 18.sp
+                                        text = descriptionText,
+                                        color = SheetSubtext, fontSize = 14.sp, textAlign = TextAlign.Center, lineHeight = 20.sp
                                     )
-                                    if (descriptionText.isNotEmpty()) {
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .background(Color(0xFF161616), RoundedCornerShape(10.dp))
-                                                .padding(12.dp)
-                                        ) {
-                                            Text(text = "Что нового:", color = SheetText, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 4.dp))
-                                            Text(text = descriptionText, color = SheetSubtext, fontSize = 12.sp, lineHeight = 16.sp)
-                                        }
-                                    }
                                     if (errorMessage != null) {
                                         Text(text = "Ошибка: $errorMessage", color = SheetDestructive, fontSize = 13.sp, textAlign = TextAlign.Center)
                                     }
@@ -364,35 +347,19 @@ fun NetFixUpdateSheet(
                                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                                     ) {
                                         Text(text = "Загрузка обновления...", color = SheetSubtext, fontSize = 14.sp, textAlign = TextAlign.Center)
-                                        LinearProgressIndicator(
-                                            progress = { downloadProgress },
-                                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                            color = SheetText,
-                                            trackColor = Color(0xFF2A2A2A)
-                                        )
+                                        NfProgress(fraction = downloadProgress, color = SheetText, trackColor = Color(0xFF2A2A2A))
                                         Text(text = "${(downloadProgress * 100).toInt()}%", color = SheetText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                     }
                                 } else {
                                     Column(
-                                        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Text(
-                                            text = "Доступна новая версия NetFix. Рекомендуем обновиться.",
-                                            color = SheetSubtext, fontSize = 13.sp, textAlign = TextAlign.Center, lineHeight = 18.sp
+                                            text = descriptionText,
+                                            color = SheetSubtext, fontSize = 14.sp, textAlign = TextAlign.Center, lineHeight = 20.sp
                                         )
-                                        if (descriptionText.isNotEmpty()) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .background(Color(0xFF161616), RoundedCornerShape(10.dp))
-                                                    .padding(12.dp)
-                                            ) {
-                                                Text(text = "Что нового:", color = SheetText, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 4.dp))
-                                                Text(text = descriptionText, color = SheetSubtext, fontSize = 12.sp, lineHeight = 16.sp)
-                                            }
-                                        }
                                         if (errorMessage != null) {
                                             Text(text = "Ошибка: $errorMessage", color = SheetDestructive, fontSize = 13.sp, textAlign = TextAlign.Center)
                                         }

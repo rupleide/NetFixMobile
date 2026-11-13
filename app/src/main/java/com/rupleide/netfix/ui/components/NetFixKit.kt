@@ -90,6 +90,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -232,10 +233,17 @@ fun NfButton(
             color = textColor,
             fontWeight = FontWeight.Medium,
             fontSize = if (small) 13.sp else 15.sp,
-            maxLines = 1
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(horizontal = if (small) 8.dp else 12.dp)
         )
     }
 }
+
+private const val PROGRESS_SWEEP_MS = 1200
+private const val PROGRESS_SEGMENT = 0.36f
+private val ProgressTrack = Color(0x1AFFFFFF)
 
 @Composable
 fun NfProgress(
@@ -243,35 +251,60 @@ fun NfProgress(
     modifier: Modifier = Modifier,
     color: Color? = null,
     height: Int = 6,
-    indeterminate: Boolean = false
+    indeterminate: Boolean = false,
+    trackColor: Color = ProgressTrack
 ) {
-    val animationsEnabled = rememberAnimationsEnabled()
+    val animationsEnabled = com.rupleide.netfix.ui.main.rememberSystemAnimationsEnabled()
     val shown by animateFloatAsState(
         targetValue = fraction.coerceIn(0f, 1f),
-        animationSpec = tween(if (animationsEnabled) 500 else 0, easing = FastOutSlowInEasing),
+        animationSpec = if (animationsEnabled) {
+            spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessVeryLow)
+        } else {
+            snap()
+        },
         label = "nfProgress"
     )
-    val barModifier = modifier
-        .fillMaxWidth()
-        .height(height.dp)
     val fill = color ?: Nf.Bright
-    if (indeterminate && fraction <= 0f) {
-        LinearProgressIndicator(
-            modifier = barModifier,
-            color = fill,
-            trackColor = Color(0x1AFFFFFF),
-            strokeCap = StrokeCap.Round
+    val sweeping = indeterminate && fraction <= 0f
+    val sweep = if (sweeping && animationsEnabled) {
+        rememberInfiniteTransition(label = "nfProgressSweep").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(PROGRESS_SWEEP_MS, easing = LinearEasing), RepeatMode.Restart),
+            label = "nfProgressSweepPosition"
         )
     } else {
-        LinearProgressIndicator(
-            progress = { shown },
-            modifier = barModifier,
-            color = fill,
-            trackColor = Color(0x1AFFFFFF),
-            strokeCap = StrokeCap.Round,
-            gapSize = 0.dp,
-            drawStopIndicator = {}
-        )
+        null
+    }
+    androidx.compose.foundation.Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(height.dp)
+    ) {
+        val radius = CornerRadius(size.height / 2f)
+        val trackShape = androidx.compose.ui.graphics.Path().apply {
+            addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, 0f, size.width, size.height, radius))
+        }
+        drawRoundRect(color = trackColor, cornerRadius = radius)
+        clipPath(trackShape) {
+            if (sweeping) {
+                val position = sweep?.value ?: 0.5f
+                val segmentWidth = size.width * PROGRESS_SEGMENT
+                val start = -segmentWidth + (size.width + segmentWidth) * position
+                drawRoundRect(
+                    color = fill,
+                    topLeft = Offset(start, 0f),
+                    size = Size(segmentWidth, size.height),
+                    cornerRadius = radius
+                )
+            } else if (shown > 0f) {
+                drawRoundRect(
+                    color = fill,
+                    size = Size(maxOf(size.width * shown, size.height), size.height),
+                    cornerRadius = radius
+                )
+            }
+        }
     }
 }
 
@@ -711,12 +744,7 @@ fun NfBottomSheet(
     val frozenNavBarPadding = remember { navBarPaddingValues }
     val transition = updateTransition(targetState = visible, label = "NfSheetTransition")
 
-    LaunchedEffect(visible) {
-        isActionSheetVisibleGlobal = visible
-    }
-    DisposableEffect(Unit) {
-        onDispose { isActionSheetVisibleGlobal = false }
-    }
+    com.rupleide.netfix.data.TrackActionSheetVisible(visible)
 
     if (!(transition.currentState || transition.targetState)) return
 

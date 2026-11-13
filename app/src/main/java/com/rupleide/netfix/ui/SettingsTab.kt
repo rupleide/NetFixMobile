@@ -22,9 +22,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Speed
@@ -38,6 +41,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.unit.IntOffset
 import com.rupleide.netfix.ui.components.BypassGuard
+import com.rupleide.netfix.ui.components.CompatibilitySettingsRows
+import com.rupleide.netfix.ui.components.TunnelDnsRows
 import com.rupleide.netfix.ui.components.Nf
 import com.rupleide.netfix.ui.components.NfButton
 import com.rupleide.netfix.ui.components.NfCornerAura
@@ -54,7 +59,6 @@ import com.rupleide.netfix.ui.components.rememberStagedLevel
 import com.rupleide.netfix.ui.components.NetFixTextField
 import com.rupleide.netfix.ui.components.NetFixActionSheet
 import com.rupleide.netfix.ui.components.NetFixLogsSheet
-import com.rupleide.netfix.ui.components.NetFixDnsSheet
 import com.rupleide.netfix.ui.components.NetFixResetSheet
 import com.rupleide.netfix.ui.components.ResetAction
 import com.rupleide.netfix.ui.components.NetFixUnloadSheet
@@ -120,6 +124,8 @@ import com.rupleide.netfix.ui.components.rememberNetFixHaptics
 import com.rupleide.netfix.core.dpibypass.ByeDpiVpnService
 import com.rupleide.netfix.core.dpibypass.appListMode
 import com.rupleide.netfix.core.dpibypass.selectedAppsWithDefaults
+import com.rupleide.netfix.core.dpibypass.rememberAiAppChoice
+import com.rupleide.netfix.core.dpibypass.aiAppsToAdd
 import com.rupleide.netfix.core.dpibypass.setAppListMode
 import com.rupleide.netfix.data.AppStatus
 import com.rupleide.netfix.data.Mode
@@ -128,6 +134,7 @@ import com.rupleide.netfix.data.performanceModeGlobal
 import com.rupleide.netfix.ui.main.liteAnimationsEnabled
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
@@ -139,12 +146,13 @@ private val settingsChipIcons = listOf(
     R.drawable.ic_bolt,
     R.drawable.ic_phone,
     R.drawable.ic_arrow,
+    R.drawable.ic_smart_tv,
     R.drawable.ic_check,
     R.drawable.ic_info,
     R.drawable.ic_delete
 )
 
-private val settingsChips = listOf("Запуск", "Система", "Батарея", "Интерфейс", "DNS", "Данные", "Отладка", "Сброс")
+private val settingsChips = listOf("Запуск", "Система", "Батарея", "Интерфейс", "DNS", "Совместимость", "Данные", "Отладка", "Сброс")
 
 @Composable
 private fun SettingsChip(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
@@ -154,17 +162,22 @@ private fun SettingsChip(label: String, selected: Boolean, modifier: Modifier, o
     val shape = RoundedCornerShape(10.dp)
     val background by animateColorAsState(
         targetValue = when {
-            pressed -> Color(0xFF383838)
-            selected -> Color(0xFF3A3A3A)
+            pressed -> Color(0xFF333333)
+            selected -> Color(0xFF2E2E2E)
             else -> Color(0xFF242424)
         },
         animationSpec = tween(280),
         label = "chipBg"
     )
     val border by animateColorAsState(
-        targetValue = if (selected) Color(0x59FFFFFF) else Color(0x1AFFFFFF),
+        targetValue = if (selected) Color(0x2EFFFFFF) else Color(0x14FFFFFF),
         animationSpec = tween(280),
         label = "chipBorder"
+    )
+    val textColor by animateColorAsState(
+        targetValue = if (selected) Color(0xFFE4E4E7) else Color(0xFFA1A1AA),
+        animationSpec = tween(280),
+        label = "chipText"
     )
     Box(
         modifier = modifier
@@ -179,7 +192,7 @@ private fun SettingsChip(label: String, selected: Boolean, modifier: Modifier, o
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        Text(text = label, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -224,13 +237,32 @@ private fun dnsHostnameFor(preset: String): String? = when (preset) {
     "Cloudflare Secure DNS" -> "one.one.one.one"
     "Google Public DNS" -> "dns.google"
     "AdGuard DNS (Блокировка рекламы)" -> "dns.adguard-dns.com"
-    "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)" -> "dot.xbox-dns.ru"
-    "Supercell Xbox DNS (supercell.xbox-dns.ru)" -> "dot.xbox-dns.ru"
+    "Supercell Xbox DNS (supercell.xbox-dns.ru)" -> "supercell.xbox-dns.ru"
     "NullsProxy DNS (dns.nullsproxy.com)" -> "dns.nullsproxy.com"
     "Comss.one DNS (dns.comss.one)" -> "dns.comss.one"
     "Geohide DNS (dns.geohide.ru)" -> "dns.geohide.ru"
     "AstraCat DNS (dns.astracat.network)" -> "dns.astracat.network"
+    "WLRus DNS (ChatGPT / Gemini)" -> "dns.wlrus.cfd"
+    "Dagami DNS (ChatGPT / Gemini)" -> "dns.dagami.ru"
     else -> null
+}
+
+private val privateDnsPresets = listOf(
+    "WLRus DNS (ChatGPT / Gemini)",
+    "Comss.one DNS (dns.comss.one)",
+    "Geohide DNS (dns.geohide.ru)",
+    "AstraCat DNS (dns.astracat.network)",
+    "Dagami DNS (ChatGPT / Gemini)",
+    "NullsProxy DNS (dns.nullsproxy.com)",
+    "Supercell Xbox DNS (supercell.xbox-dns.ru)",
+    "Cloudflare Secure DNS",
+    "Google Public DNS",
+    "AdGuard DNS (Блокировка рекламы)"
+)
+
+private fun actualPrivateDnsPreset(mode: String, specifier: String): String? = when {
+    mode != "hostname" || specifier.isBlank() -> "Стандартный (Отключено)"
+    else -> privateDnsPresets.firstOrNull { dnsHostnameFor(it).equals(specifier, ignoreCase = true) }
 }
 
 private fun copyDnsHostname(context: android.content.Context, hostname: String) {
@@ -265,7 +297,7 @@ fun SettingsTab(
         
         com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
         
-        context.stopService(android.content.Intent(context, com.rupleide.netfix.core.dpibypass.ByeDpiVpnService::class.java))
+        ServiceManager.stop(context)
         context.stopService(android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java))
         com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
         
@@ -292,6 +324,10 @@ fun SettingsTab(
     var isSelectedAppsOnlyMode by remember {
         mutableStateOf(sharedPrefs.appListMode() == com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly)
     }
+    var rootMode by remember { mutableStateOf(ServiceManager.rootMode(context)) }
+    var scanCheckDiscord by remember {
+        mutableStateOf(com.rupleide.netfix.core.dpibypass.StrategyTester.discordCheckEnabled(sharedPrefs))
+    }
     var tgProxyWakeLock by remember {
         mutableStateOf(sharedPrefs.getBoolean("tg_proxy_wakelock_enabled", false))
     }
@@ -313,17 +349,21 @@ fun SettingsTab(
     var dnsInstructionPreset by remember { mutableStateOf<String?>(null) }
     var showYoutubePlayerSheet by remember { mutableStateOf(false) }
     var youtubePlayerMode by remember { mutableStateOf(sharedPrefs.getString("youtube_mode", "official") ?: "official") }
+    var showYoutubeClientSheet by remember { mutableStateOf(false) }
+    var youtubeClientSheetOpensPicker by remember { mutableStateOf(false) }
+    var youtubeClientLabel by remember { mutableStateOf(com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)) }
     var showAppsScreen by remember { mutableStateOf(false) }
     val tvApps = LocalIsTv.current
     var showResetDialog by remember { mutableStateOf(false) }
     var showUnloadDialog by remember { mutableStateOf(false) }
+    val compatibilityState = com.rupleide.netfix.ui.components.rememberCompatibilitySettingsState(sharedPrefs)
     androidx.compose.runtime.DisposableEffect(tvApps, showAppsScreen) {
         com.rupleide.netfix.data.isTvFullScreenOverlayGlobal = tvApps && showAppsScreen
         onDispose { com.rupleide.netfix.data.isTvFullScreenOverlayGlobal = false }
     }
-    LaunchedEffect(showBypassModeDialog, showDebugMenuDialog, showDnsDialog, showResetDialog, showUnloadDialog, showAppsScreen) {
-        com.rupleide.netfix.data.isActionSheetVisibleGlobal = showBypassModeDialog || showDebugMenuDialog || showDnsDialog || showResetDialog || showUnloadDialog || dnsInstructionPreset != null || showYoutubePlayerSheet || (tvApps && showAppsScreen)
-    }
+    com.rupleide.netfix.data.TrackActionSheetVisible(
+        showBypassModeDialog || showDebugMenuDialog || showDnsDialog || showResetDialog || showUnloadDialog || dnsInstructionPreset != null || showYoutubePlayerSheet || showYoutubeClientSheet || (tvApps && showAppsScreen)
+    )
 
     val exportAllLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
@@ -417,10 +457,12 @@ fun SettingsTab(
             wantsYt -> "youtube"
             else -> "both"
         }
-        privateDnsMode = android.provider.Settings.Global.getString(
-            context.contentResolver,
-            "private_dns_mode"
-        ) ?: "off"
+    }
+    var privateDnsSpecifier by remember { mutableStateOf("") }
+    androidx.lifecycle.compose.LifecycleResumeEffect(context) {
+        privateDnsMode = android.provider.Settings.Global.getString(context.contentResolver, "private_dns_mode") ?: "off"
+        privateDnsSpecifier = android.provider.Settings.Global.getString(context.contentResolver, "private_dns_specifier").orEmpty().trim()
+        onPauseOrDispose { }
     }
 
     val tvSingleFocus = com.rupleide.netfix.ui.components.LocalIsTv.current
@@ -438,45 +480,19 @@ fun SettingsTab(
     val navOverlayReserve = safeBottomInset + com.rupleide.netfix.ui.components.navBarReserve()
 
     var isBatteryIgnored by remember { mutableStateOf(false) }
-    LaunchedEffect(context) {
-        while (true) {
-            isBatteryIgnored = VendorAutoStartHelper.isBatteryOptimizationIgnored(context)
-            delay(2000)
+    val batteryCheckLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(context, batteryCheckLifecycle) {
+        batteryCheckLifecycle.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            while (true) {
+                isBatteryIgnored = VendorAutoStartHelper.isBatteryOptimizationIgnored(context)
+                delay(2000)
+            }
         }
     }
 
-    val defaultPkgs = setOf(
-        "org.smarttube.stable",
-        "org.smarttube.beta",
-        "com.google.android.youtube",
-        "com.google.android.youtube.tv",
-        "com.liskovsoft.videomanager.v2",
-        "com.liskovsoft.smarttubetv.beta",
-        "com.teamsmart.videomanager.tv",
-        "app.revanced.android.youtube",
-        "com.google.android.apps.youtube.music",
-        "com.google.android.apps.youtube.kids",
-        "org.schabi.newpipe",
-        "org.schabi.newpipe.legacy",
-        "com.kapp.youtube",
-        "com.bg.vanced",
-        "com.libretube",
-        "com.liskovsoft.smarttubetv"
-    )
     var selectedApps by remember {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-        val saved = prefs.selectedAppsWithDefaults()
-        val initial = run {
-            val missing = defaultPkgs.filter { it !in saved }
-            if (missing.isNotEmpty()) {
-                val updated = saved + defaultPkgs
-                prefs.edit().putStringSet("selected_apps", updated).apply()
-                updated
-            } else {
-                saved
-            }
-        }
-        mutableStateOf(initial)
+        mutableStateOf(prefs.selectedAppsWithDefaults())
     }
     var installedApps by remember { mutableStateOf<List<PackageInfo>>(emptyList()) }
     var appsLoaded by remember { mutableStateOf(false) }
@@ -568,9 +584,14 @@ fun SettingsTab(
         "youtube" -> "Только YouTube"
         else -> "Telegram и YouTube"
     }
-    val shortDnsName = selectedDnsPreset.substringBefore(" (").trim()
-    val isPrivateDnsBlocking = privateDnsMode == "opportunistic" || privateDnsMode == "hostname"
-    val isCustomDnsSelected = selectedDnsPreset != "Стандартный (Отключено)"
+    val actualDnsPreset = actualPrivateDnsPreset(privateDnsMode, privateDnsSpecifier)
+    val shortDnsName = when {
+        privateDnsMode != "hostname" -> "Нет"
+        actualDnsPreset != null -> actualDnsPreset.substringBefore(" (").trim()
+        else -> privateDnsSpecifier.ifBlank { "Нет" }
+    }
+    val isPrivateDnsBlocking = privateDnsMode == "hostname" && privateDnsSpecifier.isNotBlank()
+    val isCustomDnsSelected = compatibilityState.dnsMode != com.rupleide.netfix.core.compat.TunnelDnsMode.System
     val versionName = remember(context) {
         try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
@@ -596,6 +617,17 @@ fun SettingsTab(
     var tvSection by remember { mutableIntStateOf(0) }
     val sectionListEntry = remember { FocusRequester() }
     val shown: (Int) -> Boolean = { !tv || tvSection == it }
+    LaunchedEffect(com.rupleide.netfix.data.settingsSectionRequestGlobal) {
+        val section = com.rupleide.netfix.data.settingsSectionRequestGlobal ?: return@LaunchedEffect
+        delay(500)
+        if (tv) {
+            tvSection = section
+        } else {
+            val top = sectionTops[section]
+            if (top != null) settingsScroll.animateScrollTo((top - barHeightPx - 12).coerceAtLeast(0))
+        }
+        com.rupleide.netfix.data.settingsSectionRequestGlobal = null
+    }
 
     val sectionsContent: @Composable ColumnScope.() -> Unit = {
             if (!tv && aggressiveFirmware != null && !tgProxyWakeLock && !isStableProxyHintDismissed) {
@@ -648,13 +680,39 @@ fun SettingsTab(
                     trailing = { NfValueTrailing() }
                 )
                 NfDivider()
+                NfSwitchRow(
+                    title = "Проверять Discord",
+                    newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.DISCORD,
+                    subtitle = if (scanCheckDiscord) {
+                        "Подбор способа учитывает и YouTube, и Discord"
+                    } else {
+                        "Подбор смотрит только на YouTube. Включите, если нужен Discord"
+                    },
+                    icon = Icons.Default.Forum,
+                    checked = scanCheckDiscord,
+                    onCheckedChange = { checked ->
+                        scanCheckDiscord = checked
+                        sharedPrefs.edit().putBoolean(com.rupleide.netfix.core.dpibypass.StrategyTester.KEY_SCAN_CHECK_DISCORD, checked).apply()
+                    }
+                )
+                NfDivider()
                 if (tv) {
                     NfRow(
                         title = "Плеер YouTube",
-                        subtitle = "Официальный YouTube или SmartTube",
+                        subtitle = "Что открывает кнопка YouTube на главной",
                         iconPainter = painterResource(id = R.drawable.ic_youtube),
                         onClick = { showYoutubePlayerSheet = true },
-                        trailing = { NfValueTrailing(if (youtubePlayerMode == "smarttube") "SmartTube" else "YouTube") }
+                        trailing = { NfValueTrailing(if (youtubePlayerMode == "smarttube") "SmartTube" else youtubeClientLabel) }
+                    )
+                    NfDivider()
+                } else {
+                    NfRow(
+                        title = "Приложение YouTube",
+                        subtitle = "Что открывает кнопка YouTube на главной",
+                        iconPainter = painterResource(id = R.drawable.ic_youtube),
+                        newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.YOUTUBE_APP,
+                        onClick = { showYoutubeClientSheet = true },
+                        trailing = { NfValueTrailing(youtubeClientLabel) }
                     )
                     NfDivider()
                 }
@@ -816,11 +874,13 @@ fun SettingsTab(
                 if (shown(4)) NfSection(
                     title = "DNS",
                     modifier = Modifier.nfEnter(5).trackTop(sectionTops, 4),
-                    note = "Обход блокировок сайтов (ChatGPT) и мобильных игр (Brawl Stars, Null's). Рекомендуется Xbox DNS."
+                    note = "DNS внутри туннеля работает только для приложений из «Обхода приложений». Маршрутизация DNS действует на ${if (tvSingleFocus) "всю приставку" else "весь телефон"}, даже на банки и другие приложения вне NetFix. Если она включена, DNS внутри туннеля не действует."
                 ) {
+                    TunnelDnsRows(compatibilityState)
+                    NfDivider()
                     NfRow(
                         title = "Маршрутизация DNS",
-                        subtitle = "Для сайтов и мобильных игр",
+                        subtitle = if (tvSingleFocus) "Частный DNS на всю приставку" else "Частный DNS на весь телефон",
                         icon = Icons.Default.Dns,
                         onClick = {
                             BypassGuard.guarded(context) {
@@ -866,7 +926,7 @@ fun SettingsTab(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "Он переопределяет DNS VPN. Нажмите, чтобы открыть настройки и выбрать «Отключить».",
+                                    text = "Он важнее DNS внутри туннеля. Чтобы работал DNS туннеля, выберите в настройках «Отключено».",
                                     color = Nf.TextSub,
                                     fontSize = 12.sp,
                                     lineHeight = 16.sp,
@@ -882,8 +942,42 @@ fun SettingsTab(
 
             if (stage >= 2) {
                 if (shown(5)) NfSection(
-                    title = "Экспорт и импорт",
+                    title = "Совместимость",
                     modifier = Modifier.nfEnter(6).trackTop(sectionTops, 5),
+                    note = "Всё новое из этой версии уже включено. Обычно здесь ничего менять не нужно."
+                ) {
+                    CompatibilitySettingsRows(compatibilityState) {
+                        NfDivider()
+                        NfSwitchRow(
+                            title = "Обход через root",
+                            subtitle = "Нужен root. Работает без VPN, только для выбранных приложений и IPv4",
+                            icon = Icons.Default.Settings,
+                            checked = rootMode,
+                            onCheckedChange = { checked ->
+                                if (ServiceManager.isAlive) {
+                                    android.widget.Toast.makeText(context,
+                                        "Сначала остановите обход кнопкой в приложении или уведомлении",
+                                        android.widget.Toast.LENGTH_LONG).show()
+                                    return@NfSwitchRow
+                                }
+                                BypassGuard.guarded(context) {
+                                    rootMode = checked
+                                    sharedPrefs.edit().putBoolean("byedpi_root_mode", checked).apply()
+                                    if (checked) {
+                                        isSelectedAppsOnlyMode = true
+                                        sharedPrefs.setAppListMode(com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly)
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (stage >= 2) {
+                if (shown(6)) NfSection(
+                    title = "Экспорт и импорт",
+                    modifier = Modifier.nfEnter(7).trackTop(sectionTops, 6),
                     note = "В файле все способы, их названия, выбор и результаты проверки для Wi-Fi и мобильной сети. Его можно загрузить на другом телефоне."
                 ) {
                     NfRow(
@@ -905,7 +999,7 @@ fun SettingsTab(
             }
 
             if (stage >= 3) {
-                if (shown(6)) NfSection(title = "Отладка", modifier = Modifier.nfEnter(7).trackTop(sectionTops, 6)) {
+                if (shown(7)) NfSection(title = "Отладка", modifier = Modifier.nfEnter(8).trackTop(sectionTops, 7)) {
                     NfSwitchRow(
                         title = "Запись логов",
                         subtitle = "Записывать историю действий в память",
@@ -924,11 +1018,38 @@ fun SettingsTab(
                         onClick = { showDebugMenuDialog = true },
                         trailing = { NfValueTrailing() }
                     )
+                    NfDivider()
+                    NfRow(
+                        title = "Поделиться диагностикой",
+                        subtitle = "Файл с настройками сети и ошибками. Адреса и ключи скрыты",
+                        icon = Icons.Default.Share,
+                        onClick = {
+                            val appContext = context.applicationContext
+                            Thread {
+                                val message = com.rupleide.netfix.core.debug.DiagnosticReport.shareOrSave(appContext)
+                                if (message != null) {
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }.start()
+                        },
+                        trailing = { NfValueTrailing() }
+                    )
+                    NfDivider()
+                    NfRow(
+                        title = "Помощник",
+                        newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.HELP,
+                        subtitle = "Проверит, что не так, и предложит исправления по одному",
+                        icon = Icons.Default.Help,
+                        onClick = { com.rupleide.netfix.data.helpOpenRequestGlobal = "" },
+                        trailing = { NfValueTrailing() }
+                    )
                 }
             }
 
             if (stage >= 3) {
-                if (shown(7)) NfSection(title = "Выключение", modifier = Modifier.nfEnter(8).trackTop(sectionTops, 7)) {
+                if (shown(8)) NfSection(title = "Выключение", modifier = Modifier.nfEnter(9).trackTop(sectionTops, 8)) {
                     NfRow(
                         title = "Полное закрытие",
                         subtitle = "Остановить все службы и выгрузить",
@@ -940,11 +1061,11 @@ fun SettingsTab(
             }
 
             if (stage >= 3) {
-                if (shown(7)) NfSection(
+                if (shown(8)) NfSection(
                     title = "Сброс",
                     titleColor = Nf.RedText,
                     borderColor = Nf.Red.copy(alpha = 0.25f),
-                    modifier = Modifier.nfEnter(9)
+                    modifier = Modifier.nfEnter(10)
                 ) {
                     NfRow(
                         title = "Сброс приложения",
@@ -1077,12 +1198,16 @@ fun SettingsTab(
             AppBypassScreen(
                 selectedOnly = isSelectedAppsOnlyMode,
                 onSelectedOnlyChange = { checked ->
+                    if (rootMode && !checked) {
+                        android.widget.Toast.makeText(context, "Root: выберите приложения для обхода", android.widget.Toast.LENGTH_LONG).show()
+                        return@AppBypassScreen
+                    }
                     isSelectedAppsOnlyMode = checked
                     sharedPrefs.setAppListMode(
                         if (checked) com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly
                         else com.rupleide.netfix.core.dpibypass.AppListMode.AllTraffic
                     )
-                    if (ByeDpiVpnService.isConnected) {
+                    if (ServiceManager.isConnected) {
                         ServiceManager.restart(context, Mode.VPN)
                     }
                 },
@@ -1092,12 +1217,14 @@ fun SettingsTab(
                 selectedApps = selectedApps,
                 onToggle = { pkg ->
                     val newSet = selectedApps.toMutableSet()
-                    if (!newSet.add(pkg)) newSet.remove(pkg)
+                    val nowSelected = newSet.add(pkg)
+                    if (!nowSelected) newSet.remove(pkg)
                     selectedApps = newSet
                     sharedPrefs.edit().putStringSet("selected_apps", newSet).apply()
+                    sharedPrefs.rememberAiAppChoice(pkg, nowSelected)
                 },
                 onPickPopular = {
-                    val newSet = selectedApps + com.rupleide.netfix.core.dpibypass.defaultYoutubeApps + com.rupleide.netfix.core.dpibypass.extraBypassApps
+                    val newSet = selectedApps + com.rupleide.netfix.core.dpibypass.defaultYoutubeApps + com.rupleide.netfix.core.dpibypass.extraBypassApps + sharedPrefs.aiAppsToAdd()
                     selectedApps = newSet
                     sharedPrefs.edit().putStringSet("selected_apps", newSet).apply()
                 },
@@ -1127,8 +1254,13 @@ fun SettingsTab(
         subtitle = "Что открывать на главном экране",
         closeLabel = "Закрыть"
     ) { entry ->
+        val customPlayerChosen = youtubePlayerMode == "official" && com.rupleide.netfix.core.YoutubeClient.chosenPackage(context) != null
         Text(
-            text = "Сейчас выбран: " + if (youtubePlayerMode == "smarttube") "SmartTube" else "официальный YouTube",
+            text = "Сейчас выбран: " + when {
+                youtubePlayerMode == "smarttube" -> "SmartTube"
+                customPlayerChosen -> youtubeClientLabel
+                else -> "официальный YouTube"
+            },
             color = Nf.TextSub,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
@@ -1136,7 +1268,7 @@ fun SettingsTab(
         )
         NfButton(
             text = "Официальный YouTube",
-            style = if (youtubePlayerMode == "official") NfButtonStyle.Tinted else NfButtonStyle.Secondary,
+            style = if (youtubePlayerMode == "official" && !customPlayerChosen) NfButtonStyle.Tinted else NfButtonStyle.Secondary,
             modifier = entry(1),
             onClick = {
                 sharedPrefs.edit()
@@ -1145,10 +1277,20 @@ fun SettingsTab(
                     .putBoolean("yt_check_failed", false)
                     .putBoolean("yt_check_pending", false)
                     .apply()
+                com.rupleide.netfix.core.YoutubeClient.choose(context, null)
+                youtubeClientLabel = com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)
                 youtubePlayerMode = "official"
                 showYoutubePlayerSheet = false
             }
         )
+        if (customPlayerChosen) {
+            NfButton(
+                text = youtubeClientLabel,
+                style = NfButtonStyle.Tinted,
+                modifier = entry(4),
+                onClick = { showYoutubePlayerSheet = false }
+            )
+        }
         NfButton(
             text = "SmartTube",
             style = if (youtubePlayerMode == "smarttube") NfButtonStyle.Tinted else NfButtonStyle.Secondary,
@@ -1161,6 +1303,16 @@ fun SettingsTab(
                     .apply()
                 youtubePlayerMode = "smarttube"
                 showYoutubePlayerSheet = false
+            }
+        )
+        NfButton(
+            text = "Другое приложение…",
+            style = NfButtonStyle.Secondary,
+            modifier = entry(5),
+            onClick = {
+                showYoutubePlayerSheet = false
+                youtubeClientSheetOpensPicker = true
+                showYoutubeClientSheet = true
             }
         )
         NfButton(
@@ -1180,6 +1332,147 @@ fun SettingsTab(
                 com.rupleide.netfix.data.onNavigateToTab?.invoke(0)
             }
         )
+    }
+
+    val youtubeClients = remember(showYoutubeClientSheet) { com.rupleide.netfix.core.YoutubeClient.installedClients(context) }
+    val chosenYoutubeClient = remember(showYoutubeClientSheet) {
+        com.rupleide.netfix.core.YoutubeClient.chosenPackage(context) ?: com.rupleide.netfix.core.YoutubeClient.OFFICIAL
+    }
+    var pickingOtherYoutubeClient by remember(showYoutubeClientSheet) { mutableStateOf(youtubeClientSheetOpensPicker) }
+    var otherYoutubeClientQuery by remember(showYoutubeClientSheet) { mutableStateOf("") }
+    var downloadingYoutubeClient by remember(showYoutubeClientSheet) { mutableStateOf(false) }
+    val otherYoutubeClients by androidx.compose.runtime.produceState<List<com.rupleide.netfix.core.YoutubeClientApp>?>(initialValue = null, pickingOtherYoutubeClient) {
+        value = if (!pickingOtherYoutubeClient) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            com.rupleide.netfix.core.YoutubeClient.otherLaunchableApps(context)
+        }
+    }
+    val chooseYoutubeClient: (String) -> Unit = { packageName ->
+        com.rupleide.netfix.core.YoutubeClient.choose(context, packageName)
+        if (youtubePlayerMode != "official") {
+            sharedPrefs.edit()
+                .putString("youtube_mode", "official")
+                .putBoolean("yt_check_done", true)
+                .putBoolean("yt_check_failed", false)
+                .putBoolean("yt_check_pending", false)
+                .apply()
+            youtubePlayerMode = "official"
+        }
+        if (com.rupleide.netfix.core.YoutubeClient.includeInBypass(context, packageName)) {
+            selectedApps = sharedPrefs.selectedAppsWithDefaults()
+            com.rupleide.netfix.core.dpibypass.ServiceManager.restart(context.applicationContext, com.rupleide.netfix.data.Mode.VPN)
+        }
+        youtubeClientLabel = com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)
+        showYoutubeClientSheet = false
+        youtubeClientSheetOpensPicker = false
+    }
+    com.rupleide.netfix.ui.components.NfBottomSheet(
+        visible = showYoutubeClientSheet,
+        onDismiss = {
+            if (downloadingYoutubeClient) {
+                downloadingYoutubeClient = false
+            } else if (pickingOtherYoutubeClient && !youtubeClientSheetOpensPicker) {
+                pickingOtherYoutubeClient = false
+            } else {
+                showYoutubeClientSheet = false
+                youtubeClientSheetOpensPicker = false
+            }
+        },
+        icon = Icons.Default.Settings,
+        title = "Приложение YouTube",
+        subtitle = when {
+            downloadingYoutubeClient -> "Откроется страница загрузки. После установки выберите приложение здесь"
+            pickingOtherYoutubeClient -> "Выберите приложение. NetFix сам добавит его в список приложений"
+            else -> "Что открывать кнопкой YouTube на главном экране"
+        },
+        closeLabel = if (downloadingYoutubeClient || (pickingOtherYoutubeClient && !youtubeClientSheetOpensPicker)) "Назад" else "Закрыть",
+        scrollResetKey = pickingOtherYoutubeClient to downloadingYoutubeClient
+    ) { entry ->
+        if (downloadingYoutubeClient) {
+            com.rupleide.netfix.core.YoutubeClient.downloads.forEachIndexed { index, download ->
+                NfRow(
+                    title = download.label,
+                    subtitle = download.note,
+                    iconPainter = painterResource(id = R.drawable.ic_youtube),
+                    modifier = entry(index),
+                    onClick = {
+                        try {
+                            context.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(download.url))
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        } catch (_: Exception) {
+                            android.widget.Toast.makeText(context, "Не нашлось браузера", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+        } else if (pickingOtherYoutubeClient) {
+            com.rupleide.netfix.ui.components.NfInputField(
+                value = otherYoutubeClientQuery,
+                onValueChange = { otherYoutubeClientQuery = it.take(40) },
+                placeholder = "Найти приложение",
+                modifier = entry(0)
+            )
+            val loaded = otherYoutubeClients
+            if (loaded == null) {
+                com.rupleide.netfix.ui.components.NfProgress(fraction = 0f, indeterminate = true)
+            } else {
+                val needle = otherYoutubeClientQuery.trim().lowercase()
+                val shown = loaded.filter { needle.isEmpty() || needle in it.label.lowercase() }
+                if (shown.isEmpty()) {
+                    Text(
+                        text = "Ничего не нашлось",
+                        color = Nf.TextSub,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = entry(1)
+                    )
+                }
+                shown.forEachIndexed { index, app ->
+                    NfButton(
+                        text = app.label,
+                        style = if (app.packageName == chosenYoutubeClient) NfButtonStyle.Tinted else NfButtonStyle.Secondary,
+                        modifier = entry(index + 2),
+                        onClick = { chooseYoutubeClient(app.packageName) }
+                    )
+                }
+            }
+        } else {
+            val options = if (youtubeClients.any { it.packageName == com.rupleide.netfix.core.YoutubeClient.OFFICIAL }) {
+                youtubeClients
+            } else {
+                listOf(com.rupleide.netfix.core.YoutubeClientApp(com.rupleide.netfix.core.YoutubeClient.OFFICIAL, "YouTube")) + youtubeClients
+            }
+            if (options.size == 1) {
+                Text(
+                    text = "Других приложений YouTube не найдено. Если ваше приложение не в списке, нажмите «Другое приложение»",
+                    color = Nf.TextSub,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = entry(0)
+                )
+            }
+            options.forEachIndexed { index, client ->
+                NfButton(
+                    text = client.label,
+                    style = if (client.packageName == chosenYoutubeClient) NfButtonStyle.Tinted else NfButtonStyle.Secondary,
+                    modifier = entry(index + 1),
+                    onClick = { chooseYoutubeClient(client.packageName) }
+                )
+            }
+            NfButton(
+                text = "Другое приложение…",
+                style = NfButtonStyle.Secondary,
+                modifier = entry(options.size + 1),
+                onClick = { pickingOtherYoutubeClient = true }
+            )
+            NfButton(
+                text = "Скачать другое приложение…",
+                style = NfButtonStyle.Secondary,
+                modifier = entry(options.size + 2),
+                onClick = { downloadingYoutubeClient = true }
+            )
+        }
     }
 
     NetFixLogsSheet(
@@ -1205,26 +1498,39 @@ fun SettingsTab(
 
     val dnsList = listOf(
         "Стандартный (Отключено)",
-        "Cloudflare Secure DNS",
-        "Google Public DNS",
-        "AdGuard DNS (Блокировка рекламы)",
-        "Xbox DNS (xbox-dns.ru / ChatGPT / Brawl)",
-        "Supercell Xbox DNS (supercell.xbox-dns.ru)",
-        "NullsProxy DNS (dns.nullsproxy.com)",
+        "WLRus DNS (ChatGPT / Gemini)",
         "Comss.one DNS (dns.comss.one)",
         "Geohide DNS (dns.geohide.ru)",
-        "AstraCat DNS (dns.astracat.network)"
+        "AstraCat DNS (dns.astracat.network)",
+        "Dagami DNS (ChatGPT / Gemini)",
+        "NullsProxy DNS (dns.nullsproxy.com)",
+        "Supercell Xbox DNS (supercell.xbox-dns.ru)",
+        "Cloudflare Secure DNS",
+        "Google Public DNS",
+        "AdGuard DNS (Блокировка рекламы)"
     )
 
-    NetFixDnsSheet(
+    val privateDnsChoices = dnsList.map { preset ->
+        val hostname = dnsHostnameFor(preset)
+        TunnelDnsChoice(
+            key = "private:$preset",
+            label = preset.substringBefore(" (").trim(),
+            address = hostname ?: "Частный DNS выключен",
+            selected = preset == actualDnsPreset.orEmpty(),
+            systemDns = hostname == null,
+            encrypted = hostname != null,
+            server = { listOfNotNull(hostname) }
+        )
+    }
+    TunnelDnsSheet(
         visible = showDnsDialog,
-        onDismissRequest = { showDnsDialog = false },
-        icon = R.drawable.ic_settings,
+        choices = privateDnsChoices,
         title = "Маршрутизация DNS",
-        subtitle = "Выберите пресет DNS для обхода ограничений",
-        dnsList = dnsList,
-        selectedDnsPreset = selectedDnsPreset,
-        onPresetSelected = { preset ->
+        sortPrefKey = "private_dns_sort_keys",
+        checkWithoutNetFix = true,
+        onClose = { showDnsDialog = false },
+        onSelect = { picked ->
+            val preset = dnsList.first { "private:$it" == picked.key }
             selectedDnsPreset = preset
             context.getSharedPreferences(
                 context.packageName + "_preferences",
@@ -1361,6 +1667,8 @@ fun SettingsTab(
         )
     }
 
+    com.rupleide.netfix.ui.components.CompatibilitySettingsSheets(compatibilityState)
+
         NetFixActionSheet(
         visible = showBypassModeDialog,
         onDismissRequest = { showBypassModeDialog = false },
@@ -1439,57 +1747,13 @@ fun SettingsTab(
                 label = "Сбросить всё",
                 subtitle = "Полный сброс настроек с перезапуском"
             ) {
-                com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
-                val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                    action = com.rupleide.netfix.data.STOP_ACTION
-                    com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен полный сброс настроек приложения (Сбросить всё) с перезапуском")
-                }
-                context.startService(stopIntent)
-                com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
-                com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-                prefs.edit().clear().commit()
-                val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
-                hintPrefs.edit().clear().commit()
-                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                context.startActivity(intent)
-                java.lang.System.exit(0)
+                com.rupleide.netfix.core.AppReset.resetEverything(context)
             },
             ResetAction(
                 label = "Сбросить всё, кроме результатов тестов",
                 subtitle = "Настройки удаляются, результаты тестов сохраняются"
             ) {
-                com.rupleide.netfix.core.dpibypass.ServiceManager.stop(context)
-                val stopIntent = android.content.Intent(context, com.rupleide.netfix.core.tgproxy.TgProxyService::class.java).apply {
-                    action = com.rupleide.netfix.data.STOP_ACTION
-                    com.rupleide.netfix.core.debug.AppDebugManager.log("Выполнен частичный сброс настроек (сохранены результаты тестов) с перезапуском")
-                }
-                context.startService(stopIntent)
-                com.rupleide.netfix.core.tgproxy.TgProxyController.stop()
-                com.rupleide.netfix.service.WatchdogWorker.cancelPeriodicWork(context)
-                val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
-                val isSetupComplete = prefs.getBoolean("wizard_is_setup_complete", false)
-                val isSetupCompleteOld = prefs.getBoolean("is_setup_complete", false)
-                val currentTestIndex = prefs.getInt("wizard_current_test_index", 0)
-                val currentTestIndexOld = prefs.getInt("current_test_index", 0)
-                val savedSelectedApps = prefs.getStringSet("selected_apps", null)
-                prefs.edit().clear().commit()
-                val hintPrefs = context.getSharedPreferences("netfix_hints", android.content.Context.MODE_PRIVATE)
-                hintPrefs.edit().clear().commit()
-                val edit = prefs.edit()
-                edit.putBoolean("wizard_is_setup_complete", isSetupComplete)
-                edit.putBoolean("is_setup_complete", isSetupCompleteOld)
-                edit.putInt("wizard_current_test_index", currentTestIndex)
-                edit.putInt("current_test_index", currentTestIndexOld)
-                if (savedSelectedApps != null) {
-                    edit.putStringSet("selected_apps", savedSelectedApps)
-                }
-                edit.commit()
-                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                context.startActivity(intent)
-                java.lang.System.exit(0)
+                com.rupleide.netfix.core.AppReset.resetSettingsKeepingResults(context, "из настроек")
             }
         )
     )

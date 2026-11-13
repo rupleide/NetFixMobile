@@ -3,12 +3,13 @@ package com.rupleide.netfix.core.debug
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import com.rupleide.netfix.core.dpibypass.appListMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 object AppDebugManager {
-    private const val MAX_LOGS = 2000
+    private const val MAX_LOGS = 2500
     private val logs = java.util.ArrayList<String>()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private var isEnabled = false
@@ -157,7 +158,17 @@ object AppDebugManager {
                 logs.removeAt(0)
             }
             logs.add(entry)
+            loggedTotal += 1
         }
+    }
+
+    @Volatile
+    var loggedTotal = 0L
+        private set
+
+    fun logsSince(mark: Long): List<String> = synchronized(logs) {
+        val count = (loggedTotal - mark).coerceIn(0L, logs.size.toLong()).toInt()
+        logs.takeLast(count)
     }
 
     fun getLogs(): List<String> {
@@ -238,14 +249,11 @@ object AppDebugManager {
         }
         try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            var otherVpnActive = false
-            val networks = cm.allNetworks
-            for (network in networks) {
-                val caps = cm.getNetworkCapabilities(network)
-                if (caps != null && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) {
-                    otherVpnActive = true
-                }
+            val vpnNetworkCount = cm.allNetworks.count { network ->
+                cm.getNetworkCapabilities(network)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
             }
+            val ownVpnNetworkCount = if (com.rupleide.netfix.core.dpibypass.ByeDpiVpnService.isConnected) 1 else 0
+            val otherVpnActive = vpnNetworkCount > ownVpnNetworkCount
             sb.append("Активен другой VPN в системе: ${if (otherVpnActive) "Да" else "Нет"}\n")
         } catch (e: Exception) {
             sb.append("Проверка других VPN: ошибка\n")
@@ -263,21 +271,34 @@ object AppDebugManager {
                 val byedpiArgs = prefs.getString("byedpi_cmd_args", "")
                 sb.append("Режим YouTube: ${if (manualMode) "Вручную" else "Авто"}\n")
                 sb.append("Аргументы ByeDpi: \"$byedpiArgs\"\n")
+                val appListMode = prefs.appListMode()
+                sb.append("Обход приложений: ${if (appListMode == com.rupleide.netfix.core.dpibypass.AppListMode.AllTraffic) "все приложения" else "только выбранные"}\n")
                 val allowedApps = prefs.getStringSet("selected_apps", null)
-                if (allowedApps != null) {
+                if (allowedApps != null && appListMode == com.rupleide.netfix.core.dpibypass.AppListMode.SelectedAppsOnly) {
                     sb.append("Выбранные приложения для VPN (${allowedApps.size}): ${allowedApps.joinToString(", ")}\n")
                 }
             }
+            val compatEnabled = com.rupleide.netfix.core.compat.CompatFeature.entries
+                .filter { com.rupleide.netfix.core.compat.CompatibilityManager.featureEnabled(prefs, it) }
+            sb.append("Работа сети: как в v${com.rupleide.netfix.core.compat.CompatibilityManager.behaviorVersion(prefs)}")
+            if (com.rupleide.netfix.core.compat.CompatibilityManager.isCustomized(prefs)) sb.append(" (тонкая настройка)")
+            sb.append(", новые функции: ${if (compatEnabled.isEmpty()) "выключены" else "${compatEnabled.size} из ${com.rupleide.netfix.core.compat.CompatFeature.entries.size}"}\n")
             if (wantsTelegram) {
                 val port = com.rupleide.netfix.core.tgproxy.TgProxyController.getPort(context)
                 val cfEnabled = com.rupleide.netfix.core.tgproxy.TgProxyController.isCfEnabled(context)
                 val cfPriority = com.rupleide.netfix.core.tgproxy.TgProxyController.isCfPriority(context)
-                val isPortOpen = com.rupleide.netfix.core.tgproxy.TgProxyController.isPortOpen(
-                    com.rupleide.netfix.core.tgproxy.TgProxyController.DEFAULT_BIND_IP,
-                    port,
-                    300
-                )
-                sb.append("Порт TG-прокси: $port (CF туннелирование: $cfEnabled, Приоритет CF: $cfPriority, Открыт: $isPortOpen)\n")
+                var isPortOpen = false
+                val portCheck = Thread {
+                    isPortOpen = com.rupleide.netfix.core.tgproxy.TgProxyController.isPortOpen(
+                        com.rupleide.netfix.core.tgproxy.TgProxyController.DEFAULT_BIND_IP,
+                        port,
+                        300
+                    )
+                }
+                portCheck.start()
+                portCheck.join(600)
+                val proxyRunning = com.rupleide.netfix.core.tgproxy.TgProxyController.isRunning
+                sb.append("Порт TG-прокси: $port (CF туннелирование: $cfEnabled, Приоритет CF: $cfPriority, Прокси запущен: $proxyRunning, Открыт: $isPortOpen)\n")
             }
         } catch (e: Exception) {
             sb.append("Настройки: ошибка чтения\n")

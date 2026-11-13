@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -74,6 +75,7 @@ private val CloseText = Color(0xFFC4C4C6)
 private val ButtonBorder = Color(0x1AFFFFFF)
 private val TextPrimary = Color(0xFFF4F4F5)
 private val TextSecondary = Color(0xFFA1A1AA)
+private val FootnoteText = Color(0xFF71717A)
 
 private val DecelerateEasing = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f)
 private val AccelerateEasing = CubicBezierEasing(0.4f, 0.0f, 1.0f, 1.0f)
@@ -99,7 +101,8 @@ fun NetFixActionSheet(
     title: String,
     subtitle: String,
     options: List<NetFixSheetOption>,
-    closeLabel: String = "Закрыть"
+    closeLabel: String = "Закрыть",
+    footnote: String? = null
 ) {
     val context = LocalContext.current
     val sharedPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", 0) }
@@ -304,11 +307,22 @@ fun NetFixActionSheet(
                                 textAlign = TextAlign.Center,
                                 lineHeight = 16.sp
                             )
+                            if (footnote != null) {
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    text = footnote,
+                                    color = FootnoteText,
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 15.sp
+                                )
+                            }
                         }
 
                         Column(
                             modifier = Modifier
-                                .weight(1.2f),
+                                .weight(1.2f)
+                                .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             options.forEachIndexed { index, option ->
@@ -337,6 +351,7 @@ fun NetFixActionSheet(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .weight(1f, fill = false)
                                 .background(SheetBackground, RoundedCornerShape(28.dp))
                                 .padding(top = 24.dp, start = 22.dp, end = 22.dp, bottom = 22.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -404,7 +419,10 @@ fun NetFixActionSheet(
                             Spacer(Modifier.height(20.dp))
 
                             Column(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f, fill = false)
+                                    .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 options.forEachIndexed { index, option ->
@@ -417,6 +435,17 @@ fun NetFixActionSheet(
                                         onSelected = { option.onClick() }
                                     )
                                 }
+                            }
+                            if (footnote != null) {
+                                Spacer(Modifier.height(14.dp))
+                                Text(
+                                    text = footnote,
+                                    color = FootnoteText,
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 16.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                )
                             }
                         }
 

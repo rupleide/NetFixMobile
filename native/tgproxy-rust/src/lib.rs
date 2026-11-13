@@ -200,6 +200,32 @@ pub extern "C" fn FlushPools() {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn SetPowerSave(enabled: c_int) {
+    let saving = enabled != 0;
+    let was_saving = POWER_SAVE.swap(saving, Ordering::Relaxed);
+    if saving == was_saving {
+        return;
+    }
+    linfo!("PowerSave: {}", if saving { "on" } else { "off" });
+    if saving {
+        let cf_sockets = proxy::cf_pool_drain();
+        let ws_pool = state_cell().lock().as_ref().map(|s| s.pool.clone());
+        runtime().spawn(async move {
+            for ws in cf_sockets {
+                ws.close().await;
+            }
+            if let Some(pool) = ws_pool {
+                pool.close_all().await;
+            }
+        });
+    } else {
+        runtime().spawn(async move {
+            proxy::cf_pool_refill_active();
+        });
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn SetPoolSize(size: c_int) {
     let mut n = size;
     if n < 2 {

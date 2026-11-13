@@ -337,15 +337,15 @@ fun YoutubeAdvancedTab(
     var showVpnDeniedDialog by remember { mutableStateOf(false) }
     var showTestingTypeDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(editingStrategy, deletingStrategy, showActionMenuForStrategy, showVpnDeniedDialog, showTestingTypeDialog, showAllStrategiesList, isCreatingCustomStrategy) {
-        com.rupleide.netfix.data.isActionSheetVisibleGlobal = (editingStrategy != null) ||
+    com.rupleide.netfix.data.TrackActionSheetVisible(
+        (editingStrategy != null) ||
             (deletingStrategy != null) ||
             (showActionMenuForStrategy != null) ||
             showVpnDeniedDialog ||
             showTestingTypeDialog ||
             showAllStrategiesList ||
             isCreatingCustomStrategy
-    }
+    )
 
     val vpnLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
@@ -1117,7 +1117,7 @@ fun YoutubeAdvancedTab(
                                 indication = null
                             ) {
                                 if (appStatus.first != AppStatus.Running) {
-                                    val intent = android.net.VpnService.prepare(context)
+                                    val intent = com.rupleide.netfix.core.dpibypass.ServiceManager.prepare(context)
                                     if (intent != null) {
                                         vpnLauncher.launchVpnConsentSafely(intent)
                                     } else {
@@ -1994,7 +1994,7 @@ fun YoutubeAdvancedTab(
                                         .putBoolean("byedpi_enable_cmd_settings", true)
                                         .apply()
                                     com.rupleide.netfix.core.dpibypass.StrategyTestManager.appliedStrategy = strategy
-                                    val intent = android.net.VpnService.prepare(context)
+                                    val intent = com.rupleide.netfix.core.dpibypass.ServiceManager.prepare(context)
                                     if (intent != null) {
                                         vpnLauncher.launchVpnConsentSafely(intent)
                                     } else {
@@ -2375,7 +2375,7 @@ fun YoutubeAdvancedTab(
                 bold = true
             ) {
                 showVpnDeniedDialog = false
-                val intent = android.net.VpnService.prepare(context)
+                val intent = com.rupleide.netfix.core.dpibypass.ServiceManager.prepare(context)
                 if (intent != null) {
                     vpnLauncher.launchVpnConsentSafely(intent)
                 } else {

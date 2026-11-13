@@ -45,7 +45,7 @@ class NetFixTileService : TileService() {
         }
 
         fun isNetFixRunning(): Boolean =
-            ByeDpiVpnService.isConnected || TgProxyController.isRunning
+            ServiceManager.isConnected || TgProxyController.isRunning
     }
 
     override fun onStartListening() {
@@ -89,7 +89,7 @@ class NetFixTileService : TileService() {
         val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
         val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
 
-        if (wantsYoutube && VpnService.prepare(this) != null) {
+        if (wantsYoutube && ServiceManager.prepare(this) != null) {
             openAppAndStartFromTile()
             return
         }

@@ -13,6 +13,7 @@ import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.lifecycle.lifecycleScope
 import com.rupleide.netfix.MainActivity
 import com.rupleide.netfix.R
+import com.rupleide.netfix.core.compat.CompatibilityManager
 import com.rupleide.netfix.data.AppStatus
 import com.rupleide.netfix.data.Mode
 import com.rupleide.netfix.data.ServiceStatus
@@ -40,6 +41,11 @@ class ByeDpiVpnService : LifecycleVpnService() {
     private val byeDpiProxy = ByeDpiProxy()
     private var proxyJob: Job? = null
     private var tunFd: ParcelFileDescriptor? = null
+    private var activeProxyPort: Int?
+        get() = liveProxyPort
+        set(value) {
+            liveProxyPort = value
+        }
     private val mutex = Mutex()
     private var wakeLock = null as android.os.PowerManager.WakeLock?
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
@@ -48,11 +54,16 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
     companion object {
         private val TAG: String = ByeDpiVpnService::class.java.simpleName
+
+        @Volatile
+        var liveProxyPort: Int? = null
+            private set
         private const val FOREGROUND_SERVICE_ID: Int = NETFIX_NOTIFICATION_ID
         private const val PAUSE_NOTIFICATION_ID: Int = 3
+        private const val CLOUDFLARE_CHECK_DELAY_MS = 3_000L
+        private const val CLOUDFLARE_PERIODIC_CHECK_MS = 45L * 60 * 1000
         private const val NOTIFICATION_CHANNEL_ID: String = NETFIX_NOTIFICATION_CHANNEL_ID
         private var status: ServiceStatus = ServiceStatus.Disconnected
-        private const val DEFAULT_TUNNEL_DNS = "1.1.1.1"
 
         val isConnected: Boolean
             get() = status == ServiceStatus.Connected
@@ -98,6 +109,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                                     Log.e(TAG, "Watchdog reconnect failed", e)
                                 }
                             }
+                            checkCloudflareFreeze()
                         }
                     }
                 }
@@ -237,11 +249,49 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 startTun2Socks()
                 updateStatus(ServiceStatus.Connected)
             }
+            checkCloudflareFreeze()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
             updateStatus(ServiceStatus.Failed)
             stop()
         }
+    }
+
+    private var cloudflareCheckJob: kotlinx.coroutines.Job? = null
+
+    private fun checkCloudflareFreeze() {
+        if (!CloudflareUnfreeze.isEnabled(this)) return
+        cloudflareCheckJob?.cancel()
+        cloudflareCheckJob = lifecycleScope.launch(Dispatchers.IO) {
+            delay(CLOUDFLARE_CHECK_DELAY_MS)
+            while (status == ServiceStatus.Connected) {
+                if (applyCloudflareDecision()) return@launch
+                delay(CLOUDFLARE_PERIODIC_CHECK_MS)
+            }
+        }
+    }
+
+    private suspend fun applyCloudflareDecision(): Boolean {
+        if (status != ServiceStatus.Connected || StrategyTestManager.isTesting || StrategyTestManager.isVerifying) return false
+        val port = activeProxyPort ?: return false
+        val service = this@ByeDpiVpnService
+        when (CloudflareUnfreeze.nextAction(service)) {
+            CloudflareUnfreezeAction.Keep -> Unit
+            CloudflareUnfreezeAction.Recheck -> if (!CloudflareUnfreeze.stillWorks(service, port) && status == ServiceStatus.Connected) {
+                CloudflareUnfreeze.forget(service)
+                ServiceManager.restart(service, Mode.VPN)
+                return true
+            }
+            CloudflareUnfreezeAction.Detect -> {
+                val detection = CloudflareUnfreeze.detect(service, port)
+                Log.i(TAG, "Cloudflare check: ${detection.result} ${detection.ip ?: ""}")
+                if (detection.result == CloudflareUnfreezeResult.Found && status == ServiceStatus.Connected) {
+                    ServiceManager.restart(service, Mode.VPN)
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun startForeground() {
@@ -331,9 +381,30 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
 
         val preferences = getByeDpiPreferences()
+        val (proxyIp, configuredPort) = getPreferences().getProxyIpAndPort()
+        val requestedPort = configuredPort.toIntOrNull() ?: ProxyPortResolver.DEFAULT_PROXY_PORT
+        val resolvedPort = if (CompatibilityManager.freeProxyPortEnabled(getPreferences())) {
+            ProxyPortResolver.resolve(proxyIp, requestedPort)
+        } else {
+            requestedPort
+        }
+        if (resolvedPort != requestedPort) {
+            Log.w(TAG, "Port $requestedPort is busy, using $resolvedPort")
+        }
+        activeProxyPort = resolvedPort
+        val unfreezeArgs = CloudflareUnfreeze.extraArgs(this)
+        if (unfreezeArgs.isNotEmpty()) Log.i(TAG, "Cloudflare: ${CloudflareUnfreeze.savedIp(this)}")
+        val secureDnsArgs = SecureDnsRelay.extraArgs(this)
+        val passthroughArgs = if (secureDnsArgs.isNotEmpty()) SecureDnsRelay.passthroughArgs(this) else emptyList()
+        val strategyArgs = when (preferences) {
+            is ByeDpiProxyCmdPreferences -> preferences.args
+            is ByeDpiProxyUIPreferences -> preferences.uiargs
+        }
+        val fastFailArgs = VideoFastFail.extraArgs(this, strategyArgs)
+        if (fastFailArgs.isNotEmpty()) Log.i(TAG, "Video fast fail: ${fastFailArgs.joinToString(" ")}")
 
         proxyJob = lifecycleScope.launch(Dispatchers.IO) {
-            val code = byeDpiProxy.startProxy(preferences)
+            val code = byeDpiProxy.startProxyTakingOver(preferences, resolvedPort, unfreezeArgs + secureDnsArgs + fastFailArgs, passthroughArgs)
 
             delay(500)
 
@@ -358,6 +429,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         try {
             byeDpiProxy.stopProxy()
+            SecureDnsRelay.stop()
             proxyJob?.cancel()
 
             val completed = withTimeoutOrNull(2000) {
@@ -387,7 +459,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
 
         val sharedPreferences = getPreferences()
-        val (ip, port) = sharedPreferences.getProxyIpAndPort()
+        val (ip, configuredPort) = sharedPreferences.getProxyIpAndPort()
+        val port = activeProxyPort?.toString() ?: configuredPort
 
         val dnsIps = resolveTunnelDnsServers()
         val ipv6 = sharedPreferences.getBoolean("ipv6_enable", false)
@@ -518,7 +591,11 @@ class ByeDpiVpnService : LifecycleVpnService() {
         } else {
             false
         }
-        return if (isPrivateDnsConfigured) emptyList() else listOf(DEFAULT_TUNNEL_DNS)
+        val servers = CompatibilityManager.tunnelDnsServers(getPreferences(), isPrivateDnsConfigured)
+        if (!isPrivateDnsConfigured && SecureDnsRelay.isRunning) {
+            return listOf(SecureDnsRelay.VIRTUAL_DNS)
+        }
+        return servers
     }
 
     private fun createBuilder(dnsIps: List<String>, ipv6: Boolean): Builder {
@@ -553,7 +630,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         when (preferences.appListMode()) {
             AppListMode.SelectedAppsOnly -> {
-                for (packageName in preferences.selectedAppsWithDefaults()) {
+                for (packageName in CompatibilityManager.vpnAppsFor(preferences, preferences.selectedAppsWithDefaults())) {
                     try {
                         builder.addAllowedApplication(packageName)
                     } catch (e: Exception) {

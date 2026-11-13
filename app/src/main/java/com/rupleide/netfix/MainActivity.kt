@@ -1,5 +1,7 @@
 package com.rupleide.netfix
 
+import com.rupleide.netfix.core.compat.CompatibilityManager
+import androidx.lifecycle.repeatOnLifecycle
 import com.rupleide.netfix.ui.components.NfTvRailItem
 import com.rupleide.netfix.ui.components.NfTvScaffold
 import androidx.compose.foundation.border
@@ -147,6 +149,7 @@ class MainActivity : ComponentActivity() {
             handleTileStartRequest(intent)
             requestNotificationPermissionIfNeeded()
         }
+        handleHelpRequest(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(
                 android.graphics.Color.TRANSPARENT
@@ -165,6 +168,37 @@ class MainActivity : ComponentActivity() {
             var wantsYoutubeBypass by remember { mutableStateOf(prefs.uiShowYoutube()) }
             var telegramProxyEnabledByUser by remember { mutableStateOf(prefs.uiShowTelegram()) }
             var selectedTab by remember { mutableIntStateOf(0) }
+            val compatibilityPromptEligible = remember {
+                storedVal && CompatibilityManager.shouldPromptAfterUpdate(prefs, BuildConfig.VERSION_CODE)
+            }
+            LaunchedEffect(Unit) {
+                if (!storedVal) {
+                    CompatibilityManager.adoptLatestForFreshInstall(prefs)
+                }
+                if (!compatibilityPromptEligible) {
+                    CompatibilityManager.markVersionSeen(prefs, BuildConfig.VERSION_CODE)
+                }
+            }
+            if (com.rupleide.netfix.core.beta.BetaExpiry.isBetaBuild) {
+                val betaLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                LaunchedEffect(betaLifecycleOwner) {
+                    betaLifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                        while (true) {
+                            com.rupleide.netfix.core.beta.BetaExpiry.isExpiredNow(context)
+                            if (com.rupleide.netfix.core.beta.BetaExpiry.refreshFromNetwork(context)) {
+                                com.rupleide.netfix.core.beta.BetaExpiry.shutDownServices(context)
+                            }
+                            kotlinx.coroutines.delay(60_000L)
+                        }
+                    }
+                }
+            }
+            val scanInProgress = com.rupleide.netfix.core.dpibypass.StrategyTestManager.isTesting
+            val rootView = androidx.compose.ui.platform.LocalView.current
+            androidx.compose.runtime.DisposableEffect(scanInProgress) {
+                rootView.keepScreenOn = scanInProgress
+                onDispose { rootView.keepScreenOn = false }
+            }
 
             androidx.compose.runtime.DisposableEffect(prefs) {
                 val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
@@ -236,6 +270,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(com.rupleide.netfix.data.helpOpenRequestGlobal) {
+                if (com.rupleide.netfix.data.helpOpenRequestGlobal != null) selectedTab = 4
+            }
+
+            LaunchedEffect(com.rupleide.netfix.data.whatsNewRequestGlobal) {
+                if (com.rupleide.netfix.data.whatsNewRequestGlobal != null) selectedTab = 4
+            }
+
+            LaunchedEffect(com.rupleide.netfix.data.settingsSectionRequestGlobal) {
+                if (com.rupleide.netfix.data.settingsSectionRequestGlobal != null) selectedTab = 3
+            }
+
             LaunchedEffect(Unit) {
                 val activity = context as? android.app.Activity
                 val showMsg = activity?.intent?.getBooleanExtra("showUpdateInstalledMessage", false) ?: false
@@ -254,7 +300,7 @@ class MainActivity : ComponentActivity() {
                 if (autoConnect) {
                     val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
                     val wantsTelegram = prefs.getBoolean("telegram_proxy_enabled_by_user", true)
-                    val youtubeReadyToStart = wantsYoutube && android.net.VpnService.prepare(context) == null
+                    val youtubeReadyToStart = wantsYoutube && com.rupleide.netfix.core.dpibypass.ServiceManager.prepare(context) == null
                     if (youtubeReadyToStart || wantsTelegram) {
                         prefs.edit().putBoolean("service_enabled", true).apply()
                     }
@@ -310,6 +356,7 @@ class MainActivity : ComponentActivity() {
                             onCompleted = {
                                 Log.e("NetFixDebug", "MainActivity: Setting onboarding_completed to true (calling commit)")
                                 prefs.edit().putBoolean("onboarding_completed", true).commit()
+                                CompatibilityManager.adoptLatestForFreshInstall(prefs)
                                 Log.e("NetFixDebug", "MainActivity: onboarding_completed applied, memory cache is: " + prefs.getBoolean("onboarding_completed", false))
                                 onboardingCompleted = true
                                 tvLayout = prefs.isTvLayoutEnabled(context, true)
@@ -319,7 +366,8 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     } else {
-                        androidx.activity.compose.BackHandler(enabled = tvLayout && selectedTab != 0) {
+                        val selectedTabHiddenFromNav = activeNavItems.none { it.first == selectedTab }
+                        androidx.activity.compose.BackHandler(enabled = (tvLayout && selectedTab != 0) || selectedTabHiddenFromNav) {
                             selectedTab = 0
                         }
                         Scaffold(
@@ -440,6 +488,11 @@ class MainActivity : ComponentActivity() {
 
                     com.rupleide.netfix.ui.components.VpnConsentUnavailableSheet()
 
+                    com.rupleide.netfix.ui.components.CompatibilityUpdateSheet(
+                        eligible = compatibilityPromptEligible,
+                        canShow = onboardingCompleted && !showSplash && mainContentVisible && selectedTab == 0
+                    )
+
                     if (showSplash) {
                         NetFixSplashScreen(onDismiss = {
                             showSplash = false
@@ -448,6 +501,10 @@ class MainActivity : ComponentActivity() {
                         })
                     } else if (!mainContentVisible) {
                         mainContentVisible = true
+                    }
+
+                    if (com.rupleide.netfix.core.beta.BetaExpiry.expired) {
+                        com.rupleide.netfix.ui.BetaExpiredScreen()
                     }
                 }
                 }
@@ -459,6 +516,13 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleTileStartRequest(intent)
+        handleHelpRequest(intent)
+    }
+
+    private fun handleHelpRequest(intent: Intent?) {
+        val symptom = intent?.getStringExtra(com.rupleide.netfix.core.help.HelpReminderWorker.EXTRA_OPEN_HELP) ?: return
+        intent.removeExtra(com.rupleide.netfix.core.help.HelpReminderWorker.EXTRA_OPEN_HELP)
+        com.rupleide.netfix.data.helpOpenRequestGlobal = symptom
     }
 
     private fun handleTileStartRequest(intent: Intent?) {
@@ -542,7 +606,7 @@ private fun ProxyNavigationBar(
             ) {
                 androidx.compose.material3.Surface(
                     shape = RoundedCornerShape(22.dp),
-                    color = indicatorColor,
+                    color = if (activeNavItems.any { it.first == selectedTab }) indicatorColor else Color.Transparent,
                     modifier = Modifier
                         .offset(x = indicatorOffset)
                         .padding(vertical = 6.dp)

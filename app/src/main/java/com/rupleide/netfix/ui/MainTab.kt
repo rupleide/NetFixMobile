@@ -271,9 +271,8 @@ fun MainTab(
     var showUnloadDialog by remember { mutableStateOf(false) }
     var showHintDialog by remember { mutableStateOf(false) }
     val hintPrefs = remember { context.getSharedPreferences("netfix_hints", Context.MODE_PRIVATE) }
-    LaunchedEffect(showUpdateDialog, showUnloadDialog, showHintDialog) {
-        com.rupleide.netfix.data.isActionSheetVisibleGlobal = showUpdateDialog || showUnloadDialog || showHintDialog
-    }
+    var showAssistantSheet by remember { mutableStateOf(false) }
+    com.rupleide.netfix.data.TrackActionSheetVisible(showUpdateDialog || showUnloadDialog || showHintDialog || showAssistantSheet)
 
     val lifecycleOwnerForSmartTube = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwnerForSmartTube) {
@@ -373,6 +372,10 @@ fun MainTab(
         wantsYoutubeBypass -> isStarting && currentStatus != AppStatus.Running
         telegramProxyEnabledByUser -> isStarting && !isTgProxyRunning
         else -> false
+    }
+
+    LaunchedEffect(isPending, isStopping) {
+        com.rupleide.netfix.data.isConnectionTransitionGlobal = isPending || isStopping
     }
 
     val connectionHaptics = rememberNetFixHaptics()
@@ -541,7 +544,7 @@ fun MainTab(
             .apply()
         val wantsYoutube = prefs.getBoolean("wants_youtube_bypass", true)
         if (wantsYoutube) {
-            val intent = VpnService.prepare(context)
+            val intent = ServiceManager.prepare(context)
             if (intent != null) {
                 vpnLauncher.launchVpnConsentSafely(intent)
             } else {
@@ -588,9 +591,19 @@ fun MainTab(
     }
 
     val networkKind = com.rupleide.netfix.ui.main.rememberCurrentNetworkKind()
+    val connection = com.rupleide.netfix.ui.main.rememberActiveConnection()
+    var assistantHintDismissed by remember {
+        mutableStateOf(prefs.getBoolean(com.rupleide.netfix.ui.components.NETWORK_ASSISTANT_HINT_DISMISSED_KEY, false))
+    }
     val performanceMode = performanceModeGlobal
     val isSmartTvDevice = remember { prefs.getBoolean("is_smart_tv", false) }
     val tvMode = com.rupleide.netfix.ui.components.LocalIsTv.current
+    val showAssistantHint = !tvMode && !isLandscape && com.rupleide.netfix.ui.main.shouldShowNetworkAssistantHint(
+        manufacturer = android.os.Build.MANUFACTURER,
+        connection = connection,
+        dismissed = assistantHintDismissed
+    )
+    val assistantHintReserve = if (showAssistantHint) 54.dp else 0.dp
     val isLowEndDevice = com.rupleide.netfix.ui.main.rememberIsLowEndDevice()
     val isGlassBlurAllowed = !performanceMode && !isSmartTvDevice && !isLandscape && !isLowEndDevice
     val glassHazeState = if (isGlassBlurAllowed) dev.chrisbanes.haze.rememberHazeState() else null
@@ -663,7 +676,7 @@ fun MainTab(
             (configuration.screenWidthDp.dp * 0.28f).coerceIn(180.dp, maxButtonSize)
         } else {
             val topReserve = 180.dp
-            val bottomReserve = navOverlayReserve + 142.dp
+            val bottomReserve = navOverlayReserve + 142.dp + assistantHintReserve
             val availableHeightForButton = maxHeight - topReserve - bottomReserve - 24.dp
             (configuration.screenWidthDp.dp * 0.72f)
                 .coerceAtMost(availableHeightForButton)
@@ -853,7 +866,7 @@ fun MainTab(
                         installSmartTube()
                     }
                 } else {
-                    launchOfficialYoutube()
+                    try { context.startActivity(com.rupleide.netfix.core.YoutubeClient.launchIntent(context, true)) } catch (_: Exception) {}
                 }
             }
             val statusDot = when (globeStatus) {
@@ -877,7 +890,7 @@ fun MainTab(
             }
             val tgSubtitle = if (tgEnabled) "Прокси работает" else "Сначала включите обход"
             val ytMode = prefs.getString("youtube_mode", "official") ?: "official"
-            val ytTitle = if (ytMode == "smarttube") "SmartTube" else "YouTube"
+            val ytTitle = if (ytMode == "smarttube") "SmartTube" else com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)
             val ytSubtitle = when {
                 ytAwaitStart -> "Включаем обход…"
                 isDownloadingSmartTube -> "Скачивание: ${(smartTubeDownloadProgress * 100).toInt()}%"
@@ -1297,12 +1310,7 @@ fun MainTab(
                                                 }
                                             }
                                         } else {
-                                            val pm = context.packageManager
-                                            val tvIntent = if (isSmartTv) pm.launchIntentWithLeanback("com.google.android.youtube.tv") else null
-                                            val intent = tvIntent
-                                                ?: pm.launchIntentWithLeanback("com.google.android.youtube")
-                                                ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                                            try { context.startActivity(intent) } catch (_: Exception) {}
+                                            try { context.startActivity(com.rupleide.netfix.core.YoutubeClient.launchIntent(context, isSmartTv)) } catch (_: Exception) {}
                                         }
                                     }
                                     .padding(vertical = 14.dp),
@@ -1326,7 +1334,7 @@ fun MainTab(
                                             if (youtubeMode == "smarttube") {
                                                 if (smartTubeInstalled) "SmartTube" else "Установить SmartTube"
                                             } else {
-                                                "YouTube"
+                                                com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)
                                             }
                                         },
                                         fontSize = 13.sp,
@@ -1499,6 +1507,12 @@ fun MainTab(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                if (showAssistantHint) {
+                    com.rupleide.netfix.ui.components.NetworkAssistantHintStrip(
+                        onClick = { showAssistantSheet = true },
+                        modifier = Modifier.graphicsLayer { alpha = latencyCardEntrance }
+                    )
+                }
                 com.rupleide.netfix.ui.main.LatencyStrategyCard(
                     status = globeStatus,
                     latencyMs = latencyMs,
@@ -1682,12 +1696,7 @@ fun MainTab(
                                                 }
                                             }
                                         } else {
-                                            val pm = context.packageManager
-                                            val tvIntent = if (isSmartTv) pm.launchIntentWithLeanback("com.google.android.youtube.tv") else null
-                                            val intent = tvIntent
-                                                ?: pm.launchIntentWithLeanback("com.google.android.youtube")
-                                                ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                                            try { context.startActivity(intent) } catch (_: Exception) {}
+                                            try { context.startActivity(com.rupleide.netfix.core.YoutubeClient.launchIntent(context, isSmartTv)) } catch (_: Exception) {}
                                         }
                                     }
                                     .padding(vertical = 14.dp),
@@ -1711,7 +1720,7 @@ fun MainTab(
                                             if (youtubeMode == "smarttube") {
                                                 if (smartTubeInstalled) "SmartTube" else "Установить SmartTube"
                                             } else {
-                                                "YouTube"
+                                                com.rupleide.netfix.core.YoutubeClient.buttonLabel(context)
                                             }
                                         },
                                         fontSize = 13.sp,
@@ -1734,8 +1743,8 @@ fun MainTab(
                 com.rupleide.netfix.data.forceUpdateTestGlobal = false
             }
         },
-        versionText = if (updateInfo != null) (if (updateInfo.version.startsWith("v", ignoreCase = true)) updateInfo.version else "v${updateInfo.version}") else "",
-        descriptionText = updateInfo?.description ?: "",
+        versionText = if (updateInfo != null) updateInfo.version.removePrefix("v").removePrefix("V") else "",
+        descriptionText = "Вышла новая версия NetFix с исправлениями и улучшениями. Обновитесь, чтобы всё работало стабильнее.",
         isDownloading = isDownloadingUpdate,
         downloadProgress = updateDownloadProgress,
         errorMessage = updateErrorMessage,
@@ -1864,6 +1873,25 @@ fun MainTab(
                 val activity = context as? android.app.Activity
                 activity?.finishAndRemoveTask()
             }
+        }
+    )
+
+    com.rupleide.netfix.ui.components.NetworkAssistantSheet(
+        visible = showAssistantSheet,
+        onDismissRequest = { showAssistantSheet = false },
+        onOpenWifiSettings = {
+            showAssistantSheet = false
+            try {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (_: Exception) {
+            }
+        },
+        onHideForever = {
+            showAssistantSheet = false
+            assistantHintDismissed = true
+            prefs.edit().putBoolean(com.rupleide.netfix.ui.components.NETWORK_ASSISTANT_HINT_DISMISSED_KEY, true).apply()
         }
     )
 

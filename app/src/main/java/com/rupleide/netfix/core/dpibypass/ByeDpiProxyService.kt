@@ -154,7 +154,12 @@ class ByeDpiProxyService : LifecycleService() {
         val preferences = getByeDpiPreferences()
 
         proxyJob = lifecycleScope.launch(Dispatchers.IO) {
-            val code = proxy.startProxy(preferences)
+            val strategyArgs = when (preferences) {
+                is ByeDpiProxyCmdPreferences -> preferences.args
+                is ByeDpiProxyUIPreferences -> preferences.uiargs
+            }
+            val extraArgs = CloudflareUnfreeze.extraArgs(this@ByeDpiProxyService) + VideoFastFail.extraArgs(this@ByeDpiProxyService, strategyArgs)
+            val code = proxy.startProxyTakingOver(preferences, extraArgs = extraArgs)
 
             delay(500)
 

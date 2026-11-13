@@ -51,8 +51,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rupleide.netfix.ui.main.rememberAnimationsEnabled
+import kotlinx.coroutines.launch
 
 private val EnterEasing = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f)
+private const val ROW_HIGHLIGHT_START_DELAY_MS = 900L
+private const val ROW_HIGHLIGHT_BLINKS = 3
+private const val ROW_HIGHLIGHT_HALF_BLINK_MS = 300
 
 @Composable
 fun Modifier.nfEnter(index: Int): Modifier {
@@ -176,7 +180,8 @@ fun NfRow(
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
     leading: (@Composable () -> Unit)? = null,
-    iconModifier: Modifier = Modifier
+    iconModifier: Modifier = Modifier,
+    newId: String? = null
 ) {
     val haptics = rememberNetFixHaptics()
     val interactionSource = remember { MutableInteractionSource() }
@@ -188,6 +193,24 @@ fun NfRow(
         animationSpec = tween(150),
         label = "nfRowBg"
     )
+    val highlightGlow = remember { Animatable(0f) }
+    if (newId != null) {
+        val highlightScope = androidx.compose.runtime.rememberCoroutineScope()
+        val highlightRequest = com.rupleide.netfix.data.settingHighlightGlobal
+        LaunchedEffect(highlightRequest) {
+            if (highlightRequest == newId) {
+                val fresh = com.rupleide.netfix.data.isSettingHighlightFresh()
+                com.rupleide.netfix.data.settingHighlightGlobal = null
+                if (fresh) highlightScope.launch {
+                    kotlinx.coroutines.delay(ROW_HIGHLIGHT_START_DELAY_MS)
+                    repeat(ROW_HIGHLIGHT_BLINKS) {
+                        highlightGlow.animateTo(1f, tween(ROW_HIGHLIGHT_HALF_BLINK_MS))
+                        highlightGlow.animateTo(0f, tween(ROW_HIGHLIGHT_HALF_BLINK_MS))
+                    }
+                }
+            }
+        }
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -195,6 +218,8 @@ fun NfRow(
             .then(if (onClick != null && enabled) Modifier.nfTvFocus(corner = 14.dp, inside = true) else Modifier)
             .clip(shape)
             .background(background)
+            .background(Color.White.copy(alpha = 0.08f * highlightGlow.value))
+            .border(1.5.dp, Color.White.copy(alpha = 0.85f * highlightGlow.value), shape)
             .then(
                 if (onClick != null) Modifier.clickable(
                     interactionSource = interactionSource,
@@ -230,11 +255,13 @@ fun NfRow(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
         ) {
+            val showNew = isNewFeature(newId)
             Text(
-                text = title,
+                text = titleWithNewBadge(title, showNew),
+                inlineContent = if (showNew && newId != null) newBadgeInlineContent(newId) else emptyMap(),
                 color = titleColor,
                 fontSize = 15.sp,
-                lineHeight = 18.sp,
+                lineHeight = 20.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
@@ -265,7 +292,8 @@ fun NfSwitchRow(
     icon: ImageVector? = null,
     iconPainter: Painter? = null,
     enabled: Boolean = true,
-    switchModifier: Modifier = Modifier
+    switchModifier: Modifier = Modifier,
+    newId: String? = null
 ) {
     NfRow(
         title = title,
@@ -273,6 +301,7 @@ fun NfSwitchRow(
         icon = icon,
         iconPainter = iconPainter,
         enabled = enabled,
+        newId = newId,
         modifier = modifier,
         onClick = { onCheckedChange(!checked) },
         trailing = {

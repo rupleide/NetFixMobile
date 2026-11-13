@@ -67,7 +67,8 @@ private val QrPressSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBo
 fun QrLinkDialog(
     url: String,
     label: String,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    displayText: String = url
 ) {
     val context = LocalContext.current
     val sharedPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", 0) }
@@ -139,7 +140,7 @@ fun QrLinkDialog(
                         )
 
                         Text(
-                            text = url,
+                            text = displayText,
                             color = QrSubtext,
                             fontSize = 14.sp,
                             maxLines = 1,
@@ -197,7 +198,7 @@ fun QrLinkDialog(
                     }
 
                     Text(
-                        text = url,
+                        text = displayText,
                         color = QrSubtext,
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,

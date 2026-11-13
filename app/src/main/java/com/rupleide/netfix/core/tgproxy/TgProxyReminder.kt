@@ -22,7 +22,9 @@ object TgProxyReminder {
         "org.telegram.messenger.web",
         "org.telegram.plus",
         "org.thunderdog.challegram",
-        "tw.nekomimi.nekogram"
+        "tw.nekomimi.nekogram",
+        "com.exteragram.messenger",
+        "com.radolyn.ayugram"
     )
 
     fun notifyProxyStopped(context: Context) {

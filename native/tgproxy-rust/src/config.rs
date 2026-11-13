@@ -41,6 +41,7 @@ pub const CFPROXY_GLOBAL_PARALLEL: usize = 4;
 pub static RECV_BUF: AtomicI32 = AtomicI32::new(DEFAULT_RECV_BUF as i32);
 pub static SEND_BUF: AtomicI32 = AtomicI32::new(DEFAULT_SEND_BUF as i32);
 pub static POOL_SIZE: AtomicI32 = AtomicI32::new(DEFAULT_POOL_SZ);
+pub static POWER_SAVE: AtomicBool = AtomicBool::new(false);
 pub static LOG_VERBOSE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]

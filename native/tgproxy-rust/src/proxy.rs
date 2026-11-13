@@ -163,10 +163,11 @@ impl WsPool {
             }
         }
 
-        if state
-            .refilling
-            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        if !POWER_SAVE.load(Ordering::Relaxed)
+            && state
+                .refilling
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
             let pool = self.clone();
             let st = state.clone();
@@ -225,6 +226,9 @@ impl WsPool {
     }
 
     pub async fn warmup(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
+        if POWER_SAVE.load(Ordering::Relaxed) {
+            return;
+        }
         for (dc, target_ip) in dc_opt_map {
             if target_ip.is_empty() {
                 continue;
@@ -647,7 +651,7 @@ fn cf_pool_mark_used(dc: i32) {
 }
 
 fn cf_pool_refill_async(dc: i32) {
-    if !CFPROXY_ENABLED.load(Ordering::Relaxed) {
+    if !CFPROXY_ENABLED.load(Ordering::Relaxed) || POWER_SAVE.load(Ordering::Relaxed) {
         return;
     }
     {

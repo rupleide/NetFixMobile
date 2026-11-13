@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.rupleide.netfix.core.compat.CompatibilityManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -65,7 +66,9 @@ object StrategyTestManager {
     var appliedStrategy by mutableStateOf<String?>(null)
 
     val totalStrategiesCount: Int
-        get() = StrategyTester.defaultStrategies.size + activeCustomStrategies().size
+        get() = scanStrategyCount + activeCustomStrategies().size
+
+    private var scanStrategyCount by mutableStateOf(StrategyTester.defaultStrategies.size)
 
     var checkingCustomStrategy by mutableStateOf<String?>(null)
         private set
@@ -182,9 +185,16 @@ object StrategyTestManager {
         val totalOk: Int get() = youtubeOk + discordOk
         val total: Int get() = youtubeTotal + discordTotal
         val isWorking: Boolean get() = total > 0 && totalOk * 4 >= total * 3
+        val hostBreakdown: String
+            get() = if (discordTotal > 0) {
+                "YouTube $youtubeOk/$youtubeTotal · Discord $discordOk/$discordTotal"
+            } else {
+                "YouTube $youtubeOk/$youtubeTotal"
+            }
     }
 
     val verifyResults = mutableStateMapOf<NetworkKind, List<RankedConfig>>()
+    val verifiedAt = mutableStateMapOf<NetworkKind, Long>()
 
     var isVerifying by mutableStateOf(false)
         private set
@@ -237,6 +247,8 @@ object StrategyTestManager {
     private const val NETWORK_QUICK_TIMEOUT_MS = 6_000L
     private const val NETWORK_USER_WAIT_MS = 90_000L
     private const val VERIFY_FILE = "verify_results.json"
+    const val OTHER_VPN_MESSAGE = "Включён другой VPN. Выключите его, иначе проверка покажет неверный результат."
+    private const val VERIFIED_AT_KEY = "verified_at"
     private const val UNIVERSAL_KEY = "universal_strategy"
 
     private fun loadLastScanNetwork(context: Context) {
@@ -301,6 +313,9 @@ object StrategyTestManager {
                 }
                 root.put(kind.preferenceSuffix, array)
             }
+            val times = org.json.JSONObject()
+            verifiedAt.forEach { (kind, at) -> times.put(kind.preferenceSuffix, at) }
+            root.put(VERIFIED_AT_KEY, times)
             File(context.filesDir, VERIFY_FILE).writeText(root.toString())
         } catch (_: Exception) {
         }
@@ -325,6 +340,11 @@ object StrategyTestManager {
                     )
                 }
                 verifyResults[kind] = list
+            }
+            val times = root.optJSONObject(VERIFIED_AT_KEY)
+            NetworkKind.values().filter { verifyResults.containsKey(it) }.forEach { kind ->
+                val at = times?.optLong(kind.preferenceSuffix, 0L)?.takeIf { it > 0 } ?: file.lastModified()
+                verifiedAt[kind] = at
             }
         } catch (_: Exception) {
         }
@@ -353,14 +373,22 @@ object StrategyTestManager {
     private suspend fun requestNetworkOnce(
         connectivityManager: android.net.ConnectivityManager,
         kind: NetworkKind,
-        timeoutMs: Long
+        timeoutMs: Long,
+        includeEthernet: Boolean
     ): HeldNetwork? {
-        val transport = when (kind) {
-            NetworkKind.Wifi -> android.net.NetworkCapabilities.TRANSPORT_WIFI
-            NetworkKind.Mobile -> android.net.NetworkCapabilities.TRANSPORT_CELLULAR
+        val transports = when (kind) {
+            NetworkKind.Wifi -> if (includeEthernet) {
+                listOf(
+                    android.net.NetworkCapabilities.TRANSPORT_WIFI,
+                    android.net.NetworkCapabilities.TRANSPORT_ETHERNET
+                )
+            } else {
+                listOf(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            }
+            NetworkKind.Mobile -> listOf(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)
         }
         val request = android.net.NetworkRequest.Builder()
-            .addTransportType(transport)
+            .apply { transports.forEach { addTransportType(it) } }
             .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
@@ -400,12 +428,13 @@ object StrategyTestManager {
 
     private suspend fun acquireNetwork(
         connectivityManager: android.net.ConnectivityManager,
-        kind: NetworkKind
+        kind: NetworkKind,
+        includeEthernet: Boolean
     ): HeldNetwork? {
-        requestNetworkOnce(connectivityManager, kind, NETWORK_QUICK_TIMEOUT_MS)?.let { return it }
+        requestNetworkOnce(connectivityManager, kind, NETWORK_QUICK_TIMEOUT_MS, includeEthernet)?.let { return it }
         verifyNeeds = kind
         try {
-            return requestNetworkOnce(connectivityManager, kind, NETWORK_USER_WAIT_MS)
+            return requestNetworkOnce(connectivityManager, kind, NETWORK_USER_WAIT_MS, includeEthernet)
         } finally {
             verifyNeeds = null
         }
@@ -530,6 +559,11 @@ object StrategyTestManager {
     fun startVerification(context: Context, scope: VerifyScope, only: String? = null): Job? {
         if (isVerifying || isTesting) return null
         val appContext = context.applicationContext
+        if (com.rupleide.netfix.core.help.HelpProbes.otherVpnActive(appContext)) {
+            verifyIsError = true
+            verifyMessage = OTHER_VPN_MESSAGE
+            return null
+        }
         val candidates = only?.let { listOf(it) } ?: verifyCandidates(appContext)
         if (candidates.isEmpty()) {
             verifyIsError = true
@@ -561,7 +595,11 @@ object StrategyTestManager {
             try {
                 for (kind in kinds) {
                     verifyMessage = "${kind.displayName}: подключаемся…"
-                    val held = acquireNetwork(connectivityManager, kind)
+                    val held = acquireNetwork(
+                        connectivityManager,
+                        kind,
+                        CompatibilityManager.ethernetScanEnabled(appContext.getPreferences())
+                    )
                     if (held == null) {
                         failures += when (kind) {
                             NetworkKind.Mobile -> "Мобильная сеть недоступна"
@@ -598,6 +636,7 @@ object StrategyTestManager {
                             .thenBy { if (it.averageMs < 0) Long.MAX_VALUE else it.averageMs }
                     )
                     verifyResults[kind] = sorted
+                    if (only == null && ranked.size == candidates.size) verifiedAt[kind] = System.currentTimeMillis()
                     val best = sorted.firstOrNull()
                     if (only == null && best != null && best.totalOk > 0) {
                         val prefs = appContext.getSharedPreferences(appContext.packageName + "_preferences", Context.MODE_PRIVATE)
@@ -657,6 +696,27 @@ object StrategyTestManager {
         loadLastScanNetwork(context)
         loadVerifyResults(context)
         loadCustomizations(context)
+        loadSavedResults(context)
+    }
+
+    val savedResultFiles: List<String> = listOf("proxy_test_results.txt", VERIFY_FILE)
+
+    fun reloadSavedState(context: Context) {
+        val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        verifyResults.clear()
+        verifiedAt.clear()
+        loadLastScanNetwork(context)
+        loadVerifyResults(context)
+        val activeCmd = prefs.getString(ACTIVE_STRATEGY_KEY, null)
+            ?.takeIf { it.isNotBlank() && prefs.getBoolean("byedpi_enable_cmd_settings", false) }
+        appliedStrategy = activeCmd
+        bestStrategyResult = activeCmd
+        testResults.clear()
+        loadSavedResults(context)
+        selectionVersion += 1
+    }
+
+    private fun loadSavedResults(context: Context) {
         val file = File(context.filesDir, "proxy_test_results.txt")
         if (file.exists()) {
             try {
@@ -742,6 +802,14 @@ object StrategyTestManager {
                 currentTestIndex = 0
                 currentProgress = "Готовимся к тестированию..."
 
+                if (com.rupleide.netfix.core.help.HelpProbes.otherVpnActive(context.applicationContext)) {
+                    Log.w("StrategyTestManager", "Подбор не запущен: включён другой VPN")
+                    hasConnectionError = true
+                    currentProgress = OTHER_VPN_MESSAGE
+                    isTesting = false
+                    return@launch
+                }
+
                 if (!checkInternetConnection()) {
                     Log.e("StrategyTestManager", "Ошибка автоподбора: отсутствует интернет-соединение")
                     hasConnectionError = true
@@ -752,8 +820,10 @@ object StrategyTestManager {
 
                 val tester = StrategyTester(context)
                 val wasRunning = com.rupleide.netfix.data.appStatus.first == com.rupleide.netfix.data.AppStatus.Running
+                val strategiesToScan = StrategyTester.scanStrategies(context.getPreferences())
+                scanStrategyCount = strategiesToScan.size
                 val best = tester.runTests(
-                    StrategyTester.defaultStrategies + activeCustomStrategies(),
+                    strategiesToScan + activeCustomStrategies(),
                     { finishEarlyRequested },
                     onFinalPhase = { count ->
                         scanFinalTotal = count
@@ -1167,7 +1237,52 @@ object StrategyTestManager {
             verify.put(kind.preferenceSuffix, list)
         }
         root.put("verify", verify)
+        root.put("settings", exportedSettings(prefs))
         return root.toString(2)
+    }
+
+    private val portableSettingKeys = listOf(
+        "selected_apps",
+        "apps_defaults_version",
+        APP_LIST_TYPE_KEY,
+        com.rupleide.netfix.core.compat.CompatibilityManager.KEY_TUNNEL_DNS_MODE,
+        com.rupleide.netfix.core.compat.CompatibilityManager.KEY_TUNNEL_DNS_CUSTOM,
+        com.rupleide.netfix.core.compat.CompatibilityManager.KEY_TUNNEL_DNS_NAME,
+        com.rupleide.netfix.core.YoutubeClient.KEY,
+        "youtube_mode",
+        "custom_dns_preset",
+        StrategyTester.KEY_SCAN_CHECK_DISCORD,
+        "wants_youtube_bypass",
+        "telegram_proxy_enabled_by_user",
+        "tg_proxy_wakelock_enabled"
+    )
+
+    private fun exportedSettings(prefs: android.content.SharedPreferences): org.json.JSONObject {
+        val settings = org.json.JSONObject()
+        val stored = prefs.all
+        portableSettingKeys.forEach { key ->
+            when (val value = stored[key]) {
+                is Set<*> -> settings.put(key, org.json.JSONObject().put("set", org.json.JSONArray(value.filterIsInstance<String>())))
+                is Boolean, is Int, is Long, is String -> settings.put(key, value)
+            }
+        }
+        return settings
+    }
+
+    private fun importSettings(prefs: android.content.SharedPreferences, settings: org.json.JSONObject) {
+        val editor = prefs.edit()
+        portableSettingKeys.filter { settings.has(it) }.forEach { key ->
+            when (val value = settings.get(key)) {
+                is org.json.JSONObject -> value.optJSONArray("set")?.let { array ->
+                    editor.putStringSet(key, (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }.toSet())
+                }
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putInt(key, value.toInt())
+                is String -> editor.putString(key, value)
+            }
+        }
+        editor.remove("selected_apps_installed_count").apply()
     }
 
     private fun importScanResults(context: Context, root: org.json.JSONObject): Int {
@@ -1217,6 +1332,7 @@ object StrategyTestManager {
             }
             saveVerifyResults(context)
         }
+        root.optJSONObject("settings")?.let { importSettings(prefs, it) }
         val networks = root.optJSONObject("networks")
         if (networks != null) {
             NetworkKind.values().forEach { kind ->

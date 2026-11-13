@@ -42,13 +42,16 @@ object MainMotion {
 }
 
 @Composable
-fun rememberAnimationsEnabled(): Boolean {
+fun rememberAnimationsEnabled(): Boolean =
+    rememberSystemAnimationsEnabled() && !com.rupleide.netfix.data.performanceModeGlobal
+
+@Composable
+fun rememberSystemAnimationsEnabled(): Boolean {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
-    val systemAnimationsEnabled = remember(configuration) {
+    return remember(configuration) {
         Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
     }
-    return systemAnimationsEnabled && !com.rupleide.netfix.data.performanceModeGlobal
 }
 
 fun <T> motionTween(animationsEnabled: Boolean, durationMs: Int, easing: Easing): FiniteAnimationSpec<T> =

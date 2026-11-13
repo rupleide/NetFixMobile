@@ -119,7 +119,20 @@ fun TgProxyTab(
     var confirmRegenerate by remember { mutableStateOf(false) }
     var cfEnabled by remember { mutableStateOf(TgProxyController.isCfEnabled(context)) }
     var cfPriority by remember { mutableStateOf(TgProxyController.isCfPriority(context)) }
+    var cfPinned by remember { mutableStateOf(TgProxyController.pinnedCfDomain(context)) }
+    var showCfServers by remember { mutableStateOf(false) }
     var latency by remember { mutableStateOf<Int?>(null) }
+
+    val tgPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE) }
+    var portMovedFrom by remember { mutableIntStateOf(tgPrefs.getInt(TgProxyController.KEY_PORT_MOVED_FROM, 0)) }
+    androidx.compose.runtime.DisposableEffect(tgPrefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { changedPrefs, key ->
+            if (key == "tgproxy_port") port = TgProxyController.getPort(context).toString()
+            if (key == TgProxyController.KEY_PORT_MOVED_FROM) portMovedFrom = changedPrefs.getInt(key, 0)
+        }
+        tgPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { tgPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
 
     val portNumber = port.toIntOrNull()
     val portValid = portNumber != null && portNumber in MIN_PORT..MAX_PORT
@@ -194,6 +207,9 @@ fun TgProxyTab(
     }
 
     fun openInTelegram() {
+        if (portMovedFrom > 0) {
+            TgProxyController.dismissPortMovedHint(context)
+        }
         try {
             context.startActivity(
                 Intent(Intent.ACTION_VIEW, Uri.parse(proxyUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -224,6 +240,10 @@ fun TgProxyTab(
                         }
                         NfSlotText("Запускаем прокси", Nf.Text)
                     }
+                    isWorking && portMovedFrom > 0 -> NfSlotText(
+                        "Порт $portMovedFrom занят, нажмите «Открыть»",
+                        Nf.Text
+                    )
                     isWorking -> NfSlotText(
                         "${latencyQuality(shownLatency ?: 0)} · пул: ${poolLabel(poolSize)}",
                         Nf.GreenText
@@ -440,8 +460,17 @@ fun TgProxyTab(
                     }
                     cfPriority = checked
                     TgProxyController.setCfPriority(context, checked)
-                },
-                switchModifier = Modifier.focusProperties { down = navBarFocusRequester }
+                }
+            )
+            NfDivider()
+            com.rupleide.netfix.ui.components.NfRow(
+                title = "Серверы Cloudflare",
+                newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.CF_SERVERS,
+                subtitle = cfPinned?.let { "Закреплён $it" } ?: "Проверить, какие работают, и выбрать",
+                icon = Icons.Default.Refresh,
+                onClick = { showCfServers = true },
+                trailing = { com.rupleide.netfix.ui.components.NfValueTrailing(if (cfPinned == null) "Авто" else "Свой") },
+                modifier = Modifier.focusProperties { down = navBarFocusRequester }
             )
         }
         }
@@ -488,6 +517,11 @@ fun TgProxyTab(
             sectionsContent()
         }
         }
+        CfServersSheet(
+            visible = showCfServers,
+            onDismiss = { showCfServers = false },
+            onPinnedChange = { cfPinned = it }
+        )
     }
 }
 

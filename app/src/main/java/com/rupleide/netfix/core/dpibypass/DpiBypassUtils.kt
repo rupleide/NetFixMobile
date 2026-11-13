@@ -184,10 +184,7 @@ val extraBypassApps: Set<String> = setOf(
     "com.reddit.frontpage",
     "com.viber.voip",
     "org.thoughtcrime.securesms",
-    "com.whatsapp",
-    "com.whatsapp.w4b",
     "tv.twitch.android.app",
-    "com.spotify.music",
     "com.snapchat.android",
     "com.pinterest"
 )
@@ -212,7 +209,25 @@ fun SharedPreferences.setAppListMode(mode: AppListMode) {
     edit().putString(APP_LIST_TYPE_KEY, storedValue).apply()
 }
 
-fun SharedPreferences.selectedAppsWithDefaults(): Set<String> {
+val aiBypassApps: Set<String> = setOf("com.openai.chatgpt", "com.google.android.apps.bard")
+
+const val AI_APPS_REMOVED_KEY: String = "ai_apps_user_removed"
+
+fun SharedPreferences.selectedAppsWithDefaults(): Set<String> = withAiApps(storedOrDefaultApps())
+
+fun SharedPreferences.rememberAiAppChoice(packageName: String, selected: Boolean) {
+    if (packageName !in aiBypassApps) return
+    val removed = getStringSet(AI_APPS_REMOVED_KEY, emptySet()).orEmpty().toMutableSet()
+    val changed = if (selected) removed.remove(packageName) else removed.add(packageName)
+    if (changed) edit().putStringSet(AI_APPS_REMOVED_KEY, removed).apply()
+}
+
+fun SharedPreferences.aiAppsToAdd(): Set<String> {
+    if (!com.rupleide.netfix.core.compat.CompatibilityManager.aiAppsInBypassEnabled(this)) return emptySet()
+    return aiBypassApps - getStringSet(AI_APPS_REMOVED_KEY, emptySet()).orEmpty()
+}
+
+private fun SharedPreferences.storedOrDefaultApps(): Set<String> {
     val storedApps = getStringSet("selected_apps", null)
     if (storedApps != null) {
         if (getInt(APPS_DEFAULTS_VERSION_KEY, 0) >= APPS_DEFAULTS_VERSION) return storedApps
@@ -223,6 +238,14 @@ fun SharedPreferences.selectedAppsWithDefaults(): Set<String> {
     val initial = defaultYoutubeApps + extraBypassApps
     edit().putStringSet("selected_apps", initial).putInt(APPS_DEFAULTS_VERSION_KEY, APPS_DEFAULTS_VERSION).apply()
     return initial
+}
+
+private fun SharedPreferences.withAiApps(apps: Set<String>): Set<String> {
+    val missing = aiAppsToAdd() - apps
+    if (missing.isEmpty()) return apps
+    val updated = apps + missing
+    edit().putStringSet("selected_apps", updated).apply()
+    return updated
 }
 
 const val ACTIVE_STRATEGY_KEY: String = "byedpi_cmd_args"
@@ -308,7 +331,8 @@ fun createNetFixNotification(context: Context, vpnActive: Boolean = true): Notif
         .setSilent(true)
         .setOngoing(true)
         .setContentTitle("NetFix")
-        .setContentText(if (vpnActive) "Подключение защищено" else "Работает только прокси Telegram")
+        .setContentText(if (vpnActive && ServiceManager.rootMode(context)) "Обход DPI через root"
+            else if (vpnActive) "Подключение защищено" else "Работает только прокси Telegram")
         .setContentIntent(
             PendingIntent.getActivity(
                 context,
@@ -318,7 +342,7 @@ fun createNetFixNotification(context: Context, vpnActive: Boolean = true): Notif
             )
         )
     if (vpnActive && prefs.getBoolean("wants_youtube_bypass", true)) {
-        val pauseIntent = Intent(context, ByeDpiVpnService::class.java).apply { action = PAUSE_ACTION }
+        val pauseIntent = Intent(context, ServiceManager.serviceClass(context)).apply { action = PAUSE_ACTION }
         val pausePendingIntent = PendingIntent.getForegroundService(
             context, 1, pauseIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

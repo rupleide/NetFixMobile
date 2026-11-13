@@ -110,6 +110,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rupleide.netfix.core.dpibypass.NetworkKind
+import com.rupleide.netfix.core.dpibypass.StrategyOrdering
 import com.rupleide.netfix.core.dpibypass.StrategyTestManager
 import com.rupleide.netfix.core.dpibypass.StrategyTestManager.RankedConfig
 import com.rupleide.netfix.core.dpibypass.sanitizePastedByeDpiCommand
@@ -361,12 +362,12 @@ private fun NfCard(
 }
 
 @Composable
-private fun StatusDot(color: Color, size: Dp = 8.dp) {
+internal fun StatusDot(color: Color, size: Dp = 8.dp) {
     Box(modifier = Modifier.size(size).clip(CircleShape).background(color))
 }
 
 @Composable
-private fun StatusLine(text: String, color: Color, dotColor: Color) {
+internal fun StatusLine(text: String, color: Color, dotColor: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusDot(dotColor)
         Text(text = text, color = color, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, lineHeight = 18.sp)
@@ -438,6 +439,9 @@ private fun ReadyScreen(
                         onChange = { onChange(NetworkKind.Wifi) },
                         onVerify = onVerify
                     )
+                    if (almostNothingOpens(NetworkKind.Wifi)) {
+                        WeakResultHint(modifier = Modifier.padding(top = 12.dp))
+                    }
                 }
             )
         } else LazyColumn(
@@ -446,7 +450,7 @@ private fun ReadyScreen(
                 .widthIn(max = 520.dp)
                 .fillMaxWidth()
                 .statusBarsPadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 20.dp, bottom = bottomReserve + 16.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 20.dp, bottom = bottomReserve + 40.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item(key = "title") {
@@ -469,6 +473,12 @@ private fun ReadyScreen(
                     onVerify = onVerify,
                     modifier = Modifier.nfEnter(ordered.indexOf(kind) + 1).animateItem()
                 )
+            }
+
+            if (currentKind != null && almostNothingOpens(currentKind)) {
+                item(key = "weakHint") {
+                    WeakResultHint(modifier = Modifier.nfEnter(3))
+                }
             }
 
             item(key = "check") {
@@ -501,6 +511,41 @@ private fun ReadyScreen(
                 StrategyTestManager.startTesting(context)
             })
         }
+    }
+}
+
+private const val WEAK_RESULT_SHARE = 0.3f
+
+private fun almostNothingOpens(kind: NetworkKind): Boolean {
+    if (StrategyTestManager.isVerifying || StrategyTestManager.isTesting) return false
+    val results = StrategyTestManager.verifyResults[kind].orEmpty().filter { it.total > 0 }
+    if (results.isEmpty()) return false
+    return results.maxOf { it.totalOk.toFloat() / it.total } < WEAK_RESULT_SHARE
+}
+
+@Composable
+private fun WeakResultHint(modifier: Modifier = Modifier) {
+    NfCard(modifier = modifier, borderColor = Nf.Yellow.copy(alpha = 0.35f)) {
+        StatusLine(text = "Почти ничего не открывается", color = Nf.Yellow, dotColor = Nf.Yellow)
+        Text(
+            text = if (LocalIsTv.current) {
+                "Так бывает, когда сеть отдаёт неправильные адреса сайтов. Перезагрузите роутер или переподключите интернет на приставке, потом нажмите «Проверить». Не помогло: помощник подскажет, что ещё сделать."
+            } else {
+                "Так бывает, когда сеть отдаёт неправильные адреса сайтов. Выключите и включите Wi-Fi или перейдите на мобильную сеть, потом нажмите «Проверить». Не помогло: помощник подскажет, что ещё сделать."
+            },
+            color = Nf.TextSub,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Medium
+        )
+        NfButton(
+            text = "Открыть помощник",
+            style = NfButtonStyle.Secondary,
+            onClick = {
+                com.rupleide.netfix.data.helpScreenVisibleGlobal.value = true
+                com.rupleide.netfix.data.onNavigateToTab?.invoke(4)
+            }
+        )
     }
 }
 
@@ -1175,7 +1220,7 @@ private fun CheckResultBanner(name: String, result: RankedConfig, modifier: Modi
             Text("$name · ${verdict.label}", color = verdict.textColor, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         }
         Text(
-            "YouTube ${result.youtubeOk}/${result.youtubeTotal} · Discord ${result.discordOk}/${result.discordTotal} · открыто ${result.totalOk} из ${result.total}",
+            "${result.hostBreakdown} · открыто ${result.totalOk} из ${result.total}",
             color = Nf.TextSub,
             fontWeight = FontWeight.Medium,
             fontSize = 12.sp,
@@ -1185,6 +1230,13 @@ private fun CheckResultBanner(name: String, result: RankedConfig, modifier: Modi
 }
 
 private const val ADD_FORM_KEY = "\u0000add"
+private const val SORT_BY_LATENCY_KEY = "strategy_sort_by_latency"
+private const val SORT_MODE_KEY = "strategy_sort_mode"
+private const val SORT_WORKING = "working"
+private const val SORT_LATENCY = "latency"
+private const val SORT_YOUTUBE = "youtube"
+private const val SORT_DISCORD = "discord"
+private val ALL_STRATEGY_SORTS = listOf(SORT_WORKING, SORT_YOUTUBE, SORT_DISCORD, SORT_LATENCY)
 
 @Composable
 private fun ChangeSheet(kind: NetworkKind?, onClose: () -> Unit, onVerify: (VerifyScope, String?) -> Unit) {
@@ -1197,6 +1249,13 @@ private fun ChangeSheet(kind: NetworkKind?, onClose: () -> Unit, onVerify: (Veri
     var nameDraft by remember { mutableStateOf("") }
     var addName by remember { mutableStateOf("") }
     var addCommand by remember { mutableStateOf("") }
+    val sortPrefs = remember { context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE) }
+    var sortKeys by remember {
+        mutableStateOf(
+            sortPrefs.getString(SORT_MODE_KEY, null)?.let { parseSortKeys(it, ALL_STRATEGY_SORTS) }
+                ?: if (sortPrefs.getBoolean(SORT_BY_LATENCY_KEY, false)) listOf(SORT_LATENCY) else emptyList()
+        )
+    }
     LaunchedEffect(kind) {
         if (kind != null) {
             shownKind = kind
@@ -1214,6 +1273,24 @@ private fun ChangeSheet(kind: NetworkKind?, onClose: () -> Unit, onVerify: (Veri
     val selected = if (selectionVersion >= 0) StrategyTestManager.selectedStrategyFor(context, shownKind) else null
     val liveChoices = StrategyTestManager.configChoices(shownKind).sortedByDescending { sameStrategy(it, selected) }
     val choices = if (order.isEmpty()) liveChoices else order
+    val msOf = { strategy: String -> StrategyTestManager.resultFor(shownKind, strategy)?.averageMs }
+    val discordChecked = selectionVersion >= 0 && choices.any { (StrategyTestManager.resultFor(shownKind, it)?.discordTotal ?: 0) > 0 }
+    val sortOptions = listOfNotNull(
+        SortOption(SORT_WORKING, "Работе", "работа"),
+        SortOption(SORT_YOUTUBE, "YouTube", "YouTube"),
+        SortOption(SORT_DISCORD, "Discord", "Discord").takeIf { discordChecked },
+        SortOption(SORT_LATENCY, "Задержке", "задержка")
+    )
+    val activeSort = sortKeys.filter { key -> sortOptions.any { it.key == key } }
+    val criteria = activeSort.map { key ->
+        when (key) {
+            SORT_WORKING -> StrategyOrdering.byOpened<String> { StrategyTestManager.resultFor(shownKind, it)?.let { r -> r.totalOk to r.total } }
+            SORT_YOUTUBE -> StrategyOrdering.byOpened { StrategyTestManager.resultFor(shownKind, it)?.let { r -> r.youtubeOk to r.youtubeTotal } }
+            SORT_DISCORD -> StrategyOrdering.byOpened { StrategyTestManager.resultFor(shownKind, it)?.let { r -> r.discordOk to r.discordTotal } }
+            else -> StrategyOrdering.byLatency(msOf)
+        }
+    }
+    val displayedChoices = if (selectionVersion < 0) choices else StrategyOrdering.sortedByCriteria(choices, criteria)
     val failure = !busy && StrategyTestManager.verifyIsError && StrategyTestManager.verifyMessage.isNotBlank()
     val empty = choices.isEmpty() && !adding
     val target = checked
@@ -1384,7 +1461,18 @@ private fun ChangeSheet(kind: NetworkKind?, onClose: () -> Unit, onVerify: (Veri
                                 )
                             }
                         }
-                        choices.forEachIndexed { index, strategy ->
+                        if (choices.size > 1) {
+                            SortMenu(
+                                options = sortOptions,
+                                selectedKeys = activeSort,
+                                onChange = { keys ->
+                                    sortKeys = keys
+                                    sortPrefs.edit().putString(SORT_MODE_KEY, keys.joinToString(",")).apply()
+                                },
+                                modifier = entry(0)
+                            )
+                        }
+                        displayedChoices.forEachIndexed { index, strategy ->
                             ConfigRow(
                                 kind = shownKind,
                                 strategy = strategy,
@@ -1519,7 +1607,7 @@ private fun AddStrategyForm(
 }
 
 @Composable
-private fun RadioMark(selected: Boolean) {
+internal fun RadioMark(selected: Boolean) {
     Box(
         modifier = Modifier
             .size(22.dp)
@@ -1612,15 +1700,32 @@ private fun ConfigRow(
         ) {
         RadioMark(isSelected)
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = StrategyTestManager.getStrategyName(strategy, context),
-                color = Nf.Text,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                lineHeight = 20.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = StrategyTestManager.getStrategyName(strategy, context),
+                    color = Nf.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!checking && result != null && result.averageMs > 0) {
+                    Text(
+                        text = "${result.averageMs} мс",
+                        color = Nf.TextSub,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        maxLines = 1
+                    )
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().height(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1633,7 +1738,7 @@ private fun ConfigRow(
                     text = when {
                         checking -> "Проверяем…"
                         result == null -> "Не проверен"
-                        else -> "YouTube ${result.youtubeOk}/${result.youtubeTotal} · Discord ${result.discordOk}/${result.discordTotal}"
+                        else -> result.hostBreakdown
                     },
                     color = if (checking) Nf.Bright else verdict.textColor,
                     fontWeight = FontWeight.SemiBold,
@@ -1706,7 +1811,7 @@ private fun ConfigDetail(
             )
             Text(
                 text = if (result != null) {
-                    "${kind.displayName} · YouTube ${result.youtubeOk}/${result.youtubeTotal} · Discord ${result.discordOk}/${result.discordTotal}"
+                    "${kind.displayName} · ${result.hostBreakdown}"
                 } else {
                     "${kind.displayName} · нажмите «Проверить»"
                 },
