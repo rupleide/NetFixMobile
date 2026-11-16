@@ -171,8 +171,9 @@ impl WsPool {
         {
             let pool = self.clone();
             let st = state.clone();
+            let fail_key = (dc, is_media_int(is_media));
             tokio::spawn(async move {
-                pool.refill(st, target_ip, domains).await;
+                pool.refill(st, fail_key, target_ip, domains).await;
             });
         }
 
@@ -182,6 +183,7 @@ impl WsPool {
     async fn refill(
         self: Arc<Self>,
         state: Arc<SlotState>,
+        fail_key: (i32, i32),
         target_ip: String,
         domains: Vec<String>,
     ) {
@@ -206,8 +208,10 @@ impl WsPool {
             }));
         }
 
+        let mut connected = 0usize;
         for h in handles {
             if let Ok(Some(ws)) = h.await {
+                connected += 1;
                 let now = now_unix();
                 let mut q = state.queue.lock().await;
                 if q.len() < 16 {
@@ -222,6 +226,15 @@ impl WsPool {
             }
         }
 
+        if connected == 0
+            && !self.cancel_token.is_cancelled()
+            && crate::cffront::direct_fast_fail()
+        {
+            DC_FAIL_UNTIL
+                .write()
+                .insert(fail_key, now_unix_f64() + crate::cffront::DIRECT_FAST_COOLDOWN);
+        }
+
         state.refilling.store(0, Ordering::SeqCst);
     }
 
@@ -229,11 +242,19 @@ impl WsPool {
         if POWER_SAVE.load(Ordering::Relaxed) {
             return;
         }
+        let fast = crate::cffront::direct_fast_fail();
+        let now = now_unix_f64();
         for (dc, target_ip) in dc_opt_map {
             if target_ip.is_empty() {
                 continue;
             }
             for is_media in [false, true] {
+                if fast {
+                    let key = (*dc, is_media_int(is_media));
+                    if DC_FAIL_UNTIL.read().get(&key).map_or(false, |until| now < *until) {
+                        continue;
+                    }
+                }
                 let domains = ws_domains(*dc, is_media);
                 let slot = DcSlot {
                     dc: *dc,
@@ -249,8 +270,9 @@ impl WsPool {
                     let st = state.clone();
                     let ip = target_ip.clone();
                     let doms = domains.clone();
+                    let fail_key = (*dc, is_media_int(is_media));
                     tokio::spawn(async move {
-                        pool.refill(st, ip, doms).await;
+                        pool.refill(st, fail_key, ip, doms).await;
                     });
                 }
             }
@@ -599,6 +621,24 @@ const CF_POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
 const CF_POOL_ACTIVE_WINDOW_SECS: i64 = 600;
 const CF_POOL_WARM_DCS: [i32; 2] = [2, 4];
 
+pub fn rewarm(pool: Arc<WsPool>) {
+    if !crate::cffront::direct_fast_fail() {
+        return;
+    }
+    {
+        let now = now_unix();
+        let mut used = CF_POOL_LAST_USED.lock();
+        for dc in CF_POOL_WARM_DCS {
+            used.insert(dc, now);
+        }
+    }
+    cf_pool_refill_active();
+    let map = DC_OPT.read().clone();
+    tokio::spawn(async move {
+        pool.warmup(&map).await;
+    });
+}
+
 struct CfPoolEntry {
     ws: RawWebSocket,
     domain: String,
@@ -623,6 +663,44 @@ fn close_in_background(sockets: Vec<RawWebSocket>) {
         tokio::spawn(async move {
             ws.close().await;
         });
+    }
+}
+
+fn cf_pool_put_front(dc: i32, ws: RawWebSocket, domain: String) {
+    CF_POOL.lock().entry(dc).or_default().push_front(CfPoolEntry {
+        ws,
+        domain,
+        created: now_unix(),
+    });
+}
+
+async fn direct_or_cf_race(
+    target: &str,
+    domains: &[String],
+    timeout: f64,
+    dc: i32,
+    is_media: bool,
+    cancel_token: &CancellationToken,
+) -> Option<(Option<RawWebSocket>, bool, bool)> {
+    let direct = connect_direct_ws(target, domains, timeout);
+    tokio::pin!(direct);
+    let delayed_cf = async {
+        tokio::time::sleep(crate::cffront::DIRECT_RACE_HEAD_START).await;
+        cfproxy_acquire_ws(dc, is_media, cancel_token).await
+    };
+    tokio::pin!(delayed_cf);
+    let mut cf_failed = false;
+    loop {
+        tokio::select! {
+            attempt = &mut direct => return Some(attempt),
+            cf = &mut delayed_cf, if !cf_failed => match cf {
+                Some((ws, domain)) => {
+                    cf_pool_put_front(dc, ws, domain);
+                    return None;
+                }
+                None => cf_failed = true,
+            },
+        }
     }
 }
 
@@ -1189,19 +1267,75 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     }
 
     let fail_until = DC_FAIL_UNTIL.read().get(&dc_key).copied().unwrap_or(0.0);
-    let ws_timeout = if now < fail_until {
+    let direct_fast_fail = crate::cffront::direct_fast_fail();
+    let ws_timeout = if direct_fast_fail {
+        crate::cffront::DIRECT_FAST_TIMEOUT
+    } else if now < fail_until {
         WS_FAIL_TIMEOUT
     } else {
         10.0
     };
+    let fail_cooldown = if direct_fast_fail { crate::cffront::DIRECT_FAST_COOLDOWN } else { DC_FAIL_COOLDOWN };
 
     let domains = ws_domains(dc, is_media);
-    let (mut ws_opt, ws_failed_redirect, all_redirects) =
-        if let Some(w) = pool.get(dc, is_media, target.clone(), domains.clone()).await {
+    let (mut ws_opt, ws_failed_redirect, all_redirects) = if direct_fast_fail {
+        let cooling = now < fail_until;
+        let pooled = if cooling { None } else { pool.get(dc, is_media, target.clone(), domains.clone()).await };
+        if let Some(w) = pooled {
+            crate::cffront::mark_direct_ok(dc_key);
             (Some(w), false, false)
+        } else if !cooling && crate::cffront::direct_ok(dc_key) {
+            match direct_or_cf_race(&target, &domains, ws_timeout, dc, is_media, &cancel_token).await {
+                Some(attempt) => {
+                    if attempt.0.is_none() {
+                        crate::cffront::forget_direct_ok(dc_key);
+                    }
+                    attempt
+                }
+                None => {
+                    ldebug!(" DC{}{}: Cloudflare ответил раньше прямого", dc, m_tag);
+                    do_fallback(
+                        conn,
+                        &relay_init,
+                        label,
+                        dc,
+                        is_media,
+                        splitter,
+                        &clt_decryptor,
+                        &clt_encryptor,
+                        &tg_encryptor,
+                        &tg_decryptor,
+                        cancel_token,
+                    )
+                    .await;
+                    return;
+                }
+            }
         } else {
-            connect_direct_ws(&target, &domains, ws_timeout).await
-        };
+            if !cooling {
+                crate::cffront::check_direct_in_background(dc_key, target.clone(), domains.clone());
+            }
+            do_fallback(
+                conn,
+                &relay_init,
+                label,
+                dc,
+                is_media,
+                splitter,
+                &clt_decryptor,
+                &clt_encryptor,
+                &tg_encryptor,
+                &tg_decryptor,
+                cancel_token,
+            )
+            .await;
+            return;
+        }
+    } else if let Some(w) = pool.get(dc, is_media, target.clone(), domains.clone()).await {
+        (Some(w), false, false)
+    } else {
+        connect_direct_ws(&target, &domains, ws_timeout).await
+    };
 
     if ws_opt.is_none() {
         lwarn!(" DC{}{}: все попытки WS провалены (DPI/Интернет)", dc, m_tag);
@@ -1209,7 +1343,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
             WS_BLACKLIST.write().insert(dc_key, true);
             lwarn!(" DC{}{} заблокирован (302)", dc, m_tag);
         } else {
-            DC_FAIL_UNTIL.write().insert(dc_key, now + DC_FAIL_COOLDOWN);
+            DC_FAIL_UNTIL.write().insert(dc_key, now + fail_cooldown);
         }
         let splitter_fb = MsgSplitter::new(&relay_init, proto);
         do_fallback(
@@ -1238,7 +1372,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
         lwarn!(" direct relayInit write fail DC{}{}: closed", dc, m_tag);
         ws.close().await;
 
-        DC_FAIL_UNTIL.write().insert(dc_key, now + DC_FAIL_COOLDOWN);
+        DC_FAIL_UNTIL.write().insert(dc_key, now + fail_cooldown);
 
         lwarn!(" direct retry fresh ws DC{}{}", dc, m_tag);
         let (retry_ws, retry_failed_redirect, retry_all_redirects) =

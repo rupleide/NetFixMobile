@@ -14,8 +14,8 @@ object HelpPlanner {
             if (condition) plan.add(fix)
         }
         val selectedOnly = facts.appListMode == AppListMode.SelectedAppsOnly
-        val usesBypass = symptom !in setOf(HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.Other, HelpSymptom.BrokeApp)
-        val usesTg = symptom in setOf(HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops)
+        val usesBypass = symptom !in setOf(HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.TelegramSlowMedia, HelpSymptom.Other, HelpSymptom.BrokeApp)
+        val usesTg = symptom in setOf(HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.TelegramSlowMedia)
         val privateDnsBroken = facts.privateDnsActive && !facts.systemDnsWorks
 
         if (symptom != HelpSymptom.Other && !facts.internetDirect) {
@@ -33,6 +33,7 @@ object HelpPlanner {
         when (symptom) {
             HelpSymptom.YoutubeDown -> {
                 add(HelpFix.AddAppToBypass, !facts.youtubeInBypass && selectedOnly)
+                add(HelpFix.DiscordNotNeeded, facts.discordCheckOn)
                 add(HelpFix.UseNextStrategy)
                 if (!facts.privateDnsActive) dnsChain(facts).forEach { add(it) }
                 add(HelpFix.NetworkAssistant, facts.networkAssistantRisk)
@@ -41,6 +42,7 @@ object HelpPlanner {
                 add(HelpFix.AdviceVpn)
             }
             HelpSymptom.YoutubeSlow -> {
+                add(HelpFix.DiscordNotNeeded, facts.discordCheckOn)
                 add(HelpFix.UseFasterVideoStrategy)
                 add(HelpFix.NetworkAssistant, facts.networkAssistantRisk)
                 add(HelpFix.AdviceVpn)
@@ -59,12 +61,16 @@ object HelpPlanner {
             }
             HelpSymptom.TelegramNoConnect -> {
                 add(HelpFix.TgReconnect)
+                add(HelpFix.TgNewMethods, facts.tgNewMethodsOff)
+                add(HelpFix.TgDcAuto, facts.tgCustomDc)
                 add(HelpFix.FreePortOn, !facts.freePortOn)
                 add(HelpFix.CheckCfServers, facts.tgCfEnabled)
                 add(HelpFix.TgCfPriorityOff, facts.tgCfPriority)
                 add(HelpFix.TgWatchdogOn, !facts.watchdogOn)
             }
             HelpSymptom.TelegramDrops -> {
+                add(HelpFix.TgNewMethods, facts.tgNewMethodsOff)
+                add(HelpFix.TgDcAuto, facts.tgCustomDc)
                 add(HelpFix.CheckCfServers, facts.tgCfEnabled && facts.tgCfPinned != null)
                 add(HelpFix.TgWatchdogOn, !facts.watchdogOn)
                 add(HelpFix.TgCfPriorityOff, facts.tgCfPriority)
@@ -73,6 +79,12 @@ object HelpPlanner {
                 add(HelpFix.VendorAutostart)
                 add(HelpFix.NetworkAssistant, facts.networkAssistantRisk)
                 add(HelpFix.CheckCfServers, facts.tgCfEnabled)
+            }
+            HelpSymptom.TelegramSlowMedia -> {
+                add(HelpFix.TgCfFrontOff, facts.tgCfFrontOn)
+                add(HelpFix.TgCfPlainOff, facts.tgCfPlainOn)
+                add(HelpFix.CheckCfServers, facts.tgCfEnabled)
+                add(HelpFix.TgCfPriorityOff, facts.tgCfPriority)
             }
             HelpSymptom.Discord -> {
                 add(HelpFix.AddAppToBypass, facts.targetPackage != null && !facts.targetInBypass && selectedOnly)
@@ -110,6 +122,7 @@ object HelpPlanner {
             HelpSymptom.Tv -> {
                 add(HelpFix.AddAppToBypass, facts.smartTubeInstalled && !facts.smartTubeInBypass && selectedOnly)
                 add(HelpFix.DnsSystem, facts.tunnelDns != TunnelDnsMode.System && facts.onEthernet && !facts.privateDnsActive)
+                add(HelpFix.DiscordNotNeeded, facts.discordCheckOn)
                 add(HelpFix.UseNextStrategy)
                 if (!facts.privateDnsActive) dnsChain(facts).forEach { add(it) }
                 add(HelpFix.SmartTubeConscrypt, facts.smartTubeInstalled)
@@ -117,7 +130,8 @@ object HelpPlanner {
             }
             HelpSymptom.ScanZero -> {
                 add(HelpFix.NetworkLatest, !facts.behaviorLatest)
-                add(HelpFix.RescanNetwork, plan.isNotEmpty())
+                add(HelpFix.DiscordNotNeeded, facts.discordCheckOn)
+                add(HelpFix.RescanNetwork, plan.isNotEmpty() && HelpFix.DiscordNotNeeded !in plan)
                 add(HelpFix.ResetSettings)
                 add(HelpFix.AdviceVpn)
             }
@@ -225,7 +239,7 @@ object HelpPlanner {
         if (facts.networkAssistantRisk) warn("Включены Wi-Fi и мобильная сеть, «Сетевой ассистент» может уводить трафик мимо NetFix")
         if (facts.batteryRestricted && symptom in setOf(HelpSymptom.TelegramDrops, HelpSymptom.StopsInBackground)) warn("Телефон может усыплять NetFix в фоне")
 
-        val tgSymptom = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops
+        val tgSymptom = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops || symptom == HelpSymptom.TelegramSlowMedia
         if (tgSymptom) {
             if (!facts.tgProxyRunning) bad("Прокси Telegram выключен")
             else if (!facts.tgPortOpen) bad("Прокси Telegram запущен, но порт не отвечает")

@@ -94,7 +94,7 @@ class CompatibilityManagerTest {
         val legacy = updatedUser()
         legacy.edit().putString("compat_profile", "legacy").apply()
         assertEquals("1.0.4", CompatibilityManager.behaviorVersion(legacy))
-        assertFalse(CompatibilityManager.shouldPromptAfterUpdate(legacy, 9))
+        assertTrue(CompatibilityManager.shouldPromptAfterUpdate(legacy, 9))
 
         val optimized = updatedUser()
         optimized.edit().putString("compat_profile", "optimized").apply()
@@ -111,8 +111,8 @@ class CompatibilityManagerTest {
 
     @Test
     fun behaviorChoicesStartFromBaseline() {
-        assertEquals(listOf("1.0.4", "1.0.5"), CompatibilityManager.behaviorChoices)
-        assertEquals("1.0.5", CompatibilityManager.latestVersion)
+        assertEquals(listOf("1.0.4", "1.0.5", "1.0.6"), CompatibilityManager.behaviorChoices)
+        assertEquals("1.0.6", CompatibilityManager.latestVersion)
     }
 
     @Test
@@ -208,7 +208,9 @@ class CompatibilityManagerTest {
 
     @Test
     fun featuresAreGroupedByVersion() {
-        assertEquals(listOf("1.0.5"), CompatFeature.versions)
-        assertEquals(CompatFeature.entries.toList(), CompatFeature.inVersion("1.0.5"))
+        assertEquals(listOf("1.0.5", "1.0.6"), CompatFeature.versions)
+        val hotfix = listOf(CompatFeature.TgProxyCfFront, CompatFeature.TgProxyDefaultDc, CompatFeature.TgProxyCfPlain, CompatFeature.ScanSecureResolve)
+        assertEquals(CompatFeature.entries - hotfix.toSet(), CompatFeature.inVersion("1.0.5"))
+        assertEquals(hotfix, CompatFeature.inVersion("1.0.6"))
     }
 }

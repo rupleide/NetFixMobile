@@ -120,6 +120,13 @@ object HelpProbes {
         return packagesThatCarry(context, packageName).all { it in viaVpn }
     }
 
+    fun tgNewMethodsOff(prefs: android.content.SharedPreferences): Boolean =
+        listOf(CompatFeature.TgProxyDefaultDc, CompatFeature.TgProxyCfFront, CompatFeature.TgProxyCfPlain)
+            .any { !CompatibilityManager.featureEnabled(prefs, it) }
+
+    fun tgCustomDc(context: Context): Boolean =
+        TgProxyController.getDcIps(context).let { it.isNotBlank() && it != TgProxyController.DEFAULT_DC_IPS }
+
     fun preferredYoutube(context: Context): String? {
         com.rupleide.netfix.core.YoutubeClient.chosenPackage(context)?.let { return it }
         val installed = youtubeClients.filter { isInstalled(context, it) }
@@ -361,7 +368,7 @@ object HelpProbes {
         val bypassRunning = com.rupleide.netfix.data.appStatus.first == AppStatus.Running || ServiceManager.isConnected
         val behavior = CompatibilityManager.behaviorVersion(prefs)
         val privateDns = privateDnsHost(app)
-        val tgSymptom = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops
+        val tgSymptom = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops || symptom == HelpSymptom.TelegramSlowMedia
 
         coroutineScope {
             val internet = async { internetDirect() }
@@ -441,7 +448,11 @@ object HelpProbes {
                 tgCfEnabled = TgProxyController.isCfEnabled(app),
                 tgCfPinned = TgProxyController.pinnedCfDomain(app),
                 cloudflareFreezeRuledOut = com.rupleide.netfix.core.dpibypass.CloudflareUnfreeze.isEnabled(app) &&
-                    com.rupleide.netfix.core.dpibypass.CloudflareUnfreeze.recentlyNotNeeded(app)
+                    com.rupleide.netfix.core.dpibypass.CloudflareUnfreeze.recentlyNotNeeded(app),
+                tgNewMethodsOff = tgNewMethodsOff(prefs),
+                tgCustomDc = tgCustomDc(app),
+                tgCfFrontOn = CompatibilityManager.tgProxyCfFrontEnabled(prefs),
+                tgCfPlainOn = CompatibilityManager.tgProxyCfPlainEnabled(prefs)
             )
         }
     }

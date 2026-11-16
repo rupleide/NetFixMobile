@@ -1,5 +1,5 @@
 use crate::config::*;
-use crate::ws::{is_http_status_error, ws_connect_once, RawWebSocket, WsError};
+use crate::ws::{is_http_status_error, RawWebSocket, WsError};
 use crate::{ldebug, lerror, linfo, lwarn};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -556,6 +556,29 @@ pub async fn cf_connect_domain(
     timeout: f64,
 ) -> (Option<RawWebSocket>, String, Option<WsError>) {
     let path = if path.is_empty() { "/apiws" } else { path };
+    if let Some((ws, ip)) = crate::cffront::connect_known(domain, path).await {
+        return (Some(ws), ip, None);
+    }
+    let direct = cf_connect_domain_direct(domain, path, timeout).await;
+    if direct.0.is_some() || !crate::cffront::enabled() {
+        return direct;
+    }
+    if let Some(err) = &direct.2 {
+        if is_http_status_error(err, 429) {
+            return direct;
+        }
+    }
+    match crate::cffront::connect_any(domain, path).await {
+        Some((ws, ip)) => (Some(ws), ip, None),
+        None => direct,
+    }
+}
+
+async fn cf_connect_domain_direct(
+    domain: &str,
+    path: &str,
+    timeout: f64,
+) -> (Option<RawWebSocket>, String, Option<WsError>) {
 
     let attempt_timeout = crate::ws::ws_connect_timeout(timeout);
     let mut phase_timeout = attempt_timeout;
@@ -565,7 +588,7 @@ pub async fn cf_connect_domain(
 
     if let Some(cached_ip) = cached_doh_ip(domain) {
         let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-        if let Ok(ws) = ws_connect_once(&cached_ip, domain, path, ip_timeout).await {
+        if let Ok(ws) = crate::cffront::cf_ws_connect(&cached_ip, domain, path, ip_timeout).await {
             return (Some(ws), cached_ip, None);
         }
     } else {
@@ -576,7 +599,7 @@ pub async fn cf_connect_domain(
     }
 
     let host_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-    match ws_connect_once(domain, domain, path, host_timeout).await {
+    match crate::cffront::cf_ws_connect(domain, domain, path, host_timeout).await {
         Ok(ws) => return (Some(ws), String::new(), None),
         Err(host_err) => {
             if is_http_status_error(&host_err, 429) {
@@ -589,7 +612,7 @@ pub async fn cf_connect_domain(
             }
             ldebug!(" CF DNS {} -> {}", domain, resolved_ip);
             let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-            match ws_connect_once(&resolved_ip, domain, path, ip_timeout).await {
+            match crate::cffront::cf_ws_connect(&resolved_ip, domain, path, ip_timeout).await {
                 Ok(ws) => (Some(ws), resolved_ip, None),
                 Err(e) => (None, resolved_ip, Some(e)),
             }

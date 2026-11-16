@@ -124,7 +124,7 @@ private fun symptomIcon(symptom: HelpSymptom): ImageVector = when (symptom) {
     HelpSymptom.YoutubeSlow -> Icons.Default.Speed
     HelpSymptom.YoutubeFromDesktop -> Icons.Default.Smartphone
     HelpSymptom.YoutubeBrowser -> Icons.Default.Language
-    HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops -> Icons.Default.SyncProblem
+    HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.TelegramSlowMedia -> Icons.Default.SyncProblem
     HelpSymptom.Discord -> Icons.Default.Headset
     HelpSymptom.OtherApp -> Icons.Default.Apps
     HelpSymptom.BrokeApp -> Icons.Default.BrokenImage
@@ -139,7 +139,7 @@ private fun symptomIcon(symptom: HelpSymptom): ImageVector = when (symptom) {
 private fun searchWords(symptom: HelpSymptom): String = when (symptom) {
     HelpSymptom.YoutubeDown, HelpSymptom.YoutubeSlow, HelpSymptom.YoutubeFromDesktop -> "ютуб ютьюб youtube видео ролики шортс shorts тормозит лагает"
     HelpSymptom.YoutubeBrowser -> "ютуб youtube браузер хром chrome сайт"
-    HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops -> "телеграм телега тг tg telegram прокси соединение подключение"
+    HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.TelegramSlowMedia -> "фото видео картинки медленно телеграм телега тг tg telegram прокси соединение подключение"
     HelpSymptom.Discord -> "дискорд дс discord звонки голос войс"
     HelpSymptom.OtherApp -> "инстаграм инста instagram ватсап whatsapp твиттер x чатгпт chatgpt спотифай spotify фейсбук приложение"
     HelpSymptom.BrokeApp -> "сломалось приложение спотифай spotify сайт 4pda не грузит"
@@ -448,7 +448,7 @@ private fun PickStage(beforeTakenAt: Long?, onRevert: () -> Unit, onPick: (HelpS
     NfSection(title = "Что не работает?", modifier = Modifier.nfEnter(2)) {
         symptoms.forEachIndexed { index, symptom ->
             if (index > 0) NfDivider()
-            val telegram = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops
+            val telegram = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops || symptom == HelpSymptom.TelegramSlowMedia
             NfRow(
                 title = symptom.title,
                 modifier = if (tv && index == 0) Modifier.focusRequester(firstSymptomFocus) else Modifier,
@@ -530,7 +530,7 @@ private fun TvSymptomGrid(onPick: (HelpSymptom) -> Unit) {
 @Composable
 private fun TvSymptomTile(symptom: HelpSymptom, modifier: Modifier, onClick: () -> Unit) {
     val shape = RoundedCornerShape(18.dp)
-    val telegram = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops
+    val telegram = symptom == HelpSymptom.TelegramNoConnect || symptom == HelpSymptom.TelegramDrops || symptom == HelpSymptom.TelegramSlowMedia
     Row(
         modifier = modifier
             .height(76.dp)
@@ -680,7 +680,7 @@ private fun BusyStage(text: String) {
 internal fun verifyPackage(context: android.content.Context): String? {
     val facts = HelpSession.facts
     return when (HelpSession.symptom) {
-        HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops -> HelpReport.installedTelegram(context)
+        HelpSymptom.TelegramNoConnect, HelpSymptom.TelegramDrops, HelpSymptom.TelegramSlowMedia -> HelpReport.installedTelegram(context)
         HelpSymptom.YoutubeBrowser -> facts?.browserPackage
         else -> facts?.targetPackage
     }

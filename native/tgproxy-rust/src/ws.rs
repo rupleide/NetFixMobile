@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
 // ---------------------------------------------------------------------------
@@ -167,9 +166,13 @@ impl From<std::io::Error> for WsError {
 // RawWebSocket
 // ---------------------------------------------------------------------------
 
+pub trait WsIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> WsIo for T {}
+type WsStream = Box<dyn WsIo>;
+
 pub struct RawWebSocket {
-    reader: tokio::sync::Mutex<BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>>,
-    writer: tokio::sync::Mutex<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+    reader: tokio::sync::Mutex<BufReader<tokio::io::ReadHalf<WsStream>>>,
+    writer: tokio::sync::Mutex<tokio::io::WriteHalf<WsStream>>,
     pub closed: AtomicBool,
 }
 
@@ -377,7 +380,7 @@ impl RawWebSocket {
 // Чтение одного фрейма из уже захваченного reader (без повторного lock).
 // Используется recv_with_timeout, чтобы держать lock на всё время чтения фрейма.
 async fn read_frame_locked(
-    reader: &mut BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>,
+    reader: &mut BufReader<tokio::io::ReadHalf<WsStream>>,
 ) -> Result<(u8, Vec<u8>), WsError> {
     let mut hdr = [0u8; 2];
     reader.read_exact(&mut hdr).await?;
@@ -559,7 +562,35 @@ pub async fn ws_connect_once(
             }
         };
 
-    let (read_half, mut write_half) = tokio::io::split(tls_conn);
+    ws_handshake(Box::new(tls_conn), domain, path, timeout).await
+}
+
+pub async fn ws_connect_plain(
+    dial_addr: &str,
+    domain: &str,
+    path: &str,
+    timeout: Duration,
+) -> Result<RawWebSocket, WsError> {
+    if dial_addr.is_empty() {
+        return Err(WsError::Other("empty dial address".to_string()));
+    }
+    let target_addr = format!("{}:80", dial_addr);
+    let raw_conn = match tokio::time::timeout(timeout, TcpStream::connect(&target_addr)).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => return Err(WsError::Io(e)),
+        Err(_) => return Err(WsError::Timeout),
+    };
+    set_sock_opts(&raw_conn);
+    ws_handshake(Box::new(raw_conn), domain, path, timeout).await
+}
+
+async fn ws_handshake(
+    stream: WsStream,
+    domain: &str,
+    path: &str,
+    timeout: Duration,
+) -> Result<RawWebSocket, WsError> {
+    let (read_half, mut write_half) = tokio::io::split(stream);
 
     // websocket key
     let mut ws_key_bytes = [0u8; 16];

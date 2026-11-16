@@ -13,8 +13,14 @@ class WhatsNewTest {
     @Test
     fun featureIsNewOnlyInItsOwnVersion() {
         assertTrue(WhatsNew.isNew(WhatsNewIds.HELP, "1.0.5"))
-        assertFalse(WhatsNew.isNew(WhatsNewIds.HELP, "1.0.6"))
+        assertTrue(WhatsNew.isNew(WhatsNewIds.HELP, "1.0.6"))
+        assertFalse(WhatsNew.isNew(WhatsNewIds.HELP, "1.0.7"))
         assertFalse(WhatsNew.isNew(WhatsNewIds.HELP, "1.0.4"))
+        assertTrue(WhatsNew.isNew(WhatsNewIds.TG_BLOCKS, "1.0.6"))
+        assertFalse(WhatsNew.isNew(WhatsNewIds.TG_BLOCKS, "1.0.5"))
+        assertFalse(WhatsNew.isNew(WhatsNewIds.TG_BLOCKS, "1.0.7"))
+        assertTrue(WhatsNew.isNew(WhatsNewIds.TG_DC_ADDRESSES, "1.0.6"))
+        assertFalse(WhatsNew.isNew(WhatsNewIds.TG_DC_ADDRESSES, "1.0.5"))
     }
 
     @Test

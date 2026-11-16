@@ -70,7 +70,7 @@ class HelpPlannerTest {
 
     @Test
     fun spoofedNetworkDnsAsksToReconnectBeforeRescan() {
-        val facts = HelpFacts(networkDnsSpoofed = true)
+        val facts = HelpFacts(networkDnsSpoofed = true, discordCheckOn = false)
         val plan = HelpPlanner.fixes(HelpSymptom.ScanZero, facts)
         assertEquals(HelpFix.ReconnectNetwork, plan.first())
         assertTrue(plan.indexOf(HelpFix.ReconnectNetwork) < plan.indexOf(HelpFix.RescanNetwork))
@@ -224,8 +224,10 @@ class HelpPlannerTest {
 
     @Test
     fun scanZeroRescansOnlyAfterFixingACause() {
-        val plan = HelpPlanner.fixes(HelpSymptom.ScanZero, HelpFacts(privateDnsActive = true, systemDnsWorks = false, privateDnsHost = "dot.xbox-dns.ru"))
+        val plan = HelpPlanner.fixes(HelpSymptom.ScanZero, HelpFacts(privateDnsActive = true, systemDnsWorks = false, privateDnsHost = "dot.xbox-dns.ru", discordCheckOn = false))
         assertEquals(listOf(HelpFix.DisablePrivateDns, HelpFix.RescanNetwork), plan.take(2))
+        val withDiscord = HelpPlanner.fixes(HelpSymptom.ScanZero, HelpFacts(privateDnsActive = true, systemDnsWorks = false, privateDnsHost = "dot.xbox-dns.ru"))
+        assertEquals(listOf(HelpFix.DisablePrivateDns, HelpFix.DiscordNotNeeded), withDiscord.take(2))
     }
 
     @Test
@@ -309,5 +311,36 @@ class HelpPlannerTest {
     fun findingsReportOtherVpnAsProblem() {
         val findings = HelpPlanner.findings(HelpSymptom.YoutubeDown, HelpFacts(otherVpnActive = true))
         assertTrue(findings.any { it.level == HelpLevel.Bad && "VPN" in it.text })
+    }
+
+    @Test
+    fun youtubeAsksAboutDiscordFirstWhenItIsChecked() {
+        listOf(HelpSymptom.YoutubeDown, HelpSymptom.YoutubeSlow, HelpSymptom.ScanZero).forEach {
+            assertEquals(it.name, HelpFix.DiscordNotNeeded, HelpPlanner.fixes(it, HelpFacts(discordCheckOn = true)).first())
+            assertFalse(it.name, HelpFix.DiscordNotNeeded in HelpPlanner.fixes(it, HelpFacts(discordCheckOn = false)))
+        }
+        assertFalse(HelpFix.DiscordNotNeeded in HelpPlanner.fixes(HelpSymptom.Discord, HelpFacts(discordCheckOn = true)))
+        assertFalse(HelpFix.RescanNetwork in HelpPlanner.fixes(HelpSymptom.ScanZero, HelpFacts(discordCheckOn = true)))
+    }
+
+    @Test
+    fun slowTelegramMediaTurnsFallbackOffFirst() {
+        val plan = HelpPlanner.fixes(HelpSymptom.TelegramSlowMedia, HelpFacts(tgCfFrontOn = true, tgCfPlainOn = true))
+        assertEquals(listOf(HelpFix.TgCfFrontOff, HelpFix.TgCfPlainOff), plan.take(2))
+        val nothingNew = HelpPlanner.fixes(HelpSymptom.TelegramSlowMedia, HelpFacts(tgCfFrontOn = false, tgCfPlainOn = false))
+        assertFalse(HelpFix.TgCfFrontOff in nothingNew)
+        assertFalse(HelpFix.TgCfPlainOff in nothingNew)
+    }
+
+    @Test
+    fun telegramOffersNewMethodsAndAutoDcRightAfterReconnect() {
+        val facts = HelpFacts(tgNewMethodsOff = true, tgCustomDc = true)
+        val noConnect = HelpPlanner.fixes(HelpSymptom.TelegramNoConnect, facts)
+        assertEquals(listOf(HelpFix.TgReconnect, HelpFix.TgNewMethods, HelpFix.TgDcAuto), noConnect.take(3))
+        val drops = HelpPlanner.fixes(HelpSymptom.TelegramDrops, facts)
+        assertEquals(listOf(HelpFix.TgNewMethods, HelpFix.TgDcAuto), drops.take(2))
+        val upToDate = HelpPlanner.fixes(HelpSymptom.TelegramNoConnect, HelpFacts())
+        assertFalse(HelpFix.TgNewMethods in upToDate)
+        assertFalse(HelpFix.TgDcAuto in upToDate)
     }
 }

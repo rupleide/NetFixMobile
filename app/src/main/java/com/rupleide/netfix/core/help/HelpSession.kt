@@ -232,6 +232,11 @@ object HelpSession {
             tgCfPriority = com.rupleide.netfix.core.tgproxy.TgProxyController.isCfPriority(app),
             watchdogOn = com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyWatchdogEnabled(prefs),
             tgStable = prefs.getBoolean("tg_proxy_wakelock_enabled", false),
+            tgNewMethodsOff = HelpProbes.tgNewMethodsOff(prefs),
+            tgCustomDc = HelpProbes.tgCustomDc(app),
+            tgCfFrontOn = com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyCfFrontEnabled(prefs),
+            tgCfPlainOn = com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyCfPlainEnabled(prefs),
+            discordCheckOn = com.rupleide.netfix.core.dpibypass.StrategyTester.discordCheckEnabled(prefs),
             batteryRestricted = !VendorAutoStartHelper.isBatteryOptimizationIgnored(app),
             currentProbe = null
         )

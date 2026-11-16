@@ -119,9 +119,24 @@ fun TgProxyTab(
     var confirmRegenerate by remember { mutableStateOf(false) }
     var cfEnabled by remember { mutableStateOf(TgProxyController.isCfEnabled(context)) }
     var cfPriority by remember { mutableStateOf(TgProxyController.isCfPriority(context)) }
+    var cfPlain by remember {
+        mutableStateOf(
+            com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyCfPlainEnabled(
+                context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
+            )
+        )
+    }
     var cfPinned by remember { mutableStateOf(TgProxyController.pinnedCfDomain(context)) }
     var showCfServers by remember { mutableStateOf(false) }
     var latency by remember { mutableStateOf<Int?>(null) }
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    val dcAddressesFeature = remember {
+        com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyDefaultDcEnabled(
+            context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        )
+    }
+    var dcAddressesBusy by remember { mutableStateOf(false) }
+    var dcAddressesStatus by remember { mutableStateOf(dcAddressesLine(context, null)) }
 
     val tgPrefs = remember(context) { context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE) }
     var portMovedFrom by remember { mutableIntStateOf(tgPrefs.getInt(TgProxyController.KEY_PORT_MOVED_FROM, 0)) }
@@ -323,6 +338,27 @@ fun TgProxyTab(
                     }
                 )
 
+                if (isDcAuto && dcAddressesFeature) {
+                    com.rupleide.netfix.ui.components.NfRow(
+                        title = "Адреса Telegram",
+                        newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.TG_DC_ADDRESSES,
+                        subtitle = dcAddressesStatus,
+                        icon = Icons.Default.Refresh,
+                        onClick = {
+                            if (dcAddressesBusy) return@NfRow
+                            dcAddressesBusy = true
+                            dcAddressesStatus = "Проверяю на GitHub…"
+                            TgProxyController.refreshDcAddressesInBackground(context, force = true) { result ->
+                                mainHandler.post {
+                                    dcAddressesBusy = false
+                                    dcAddressesStatus = dcAddressesLine(context, result)
+                                }
+                            }
+                        },
+                        trailing = { com.rupleide.netfix.ui.components.NfValueTrailing(if (dcAddressesBusy) "…" else "Обновить") }
+                    )
+                }
+
                 if (!isDcAuto) {
                     NfFieldBlock(label = "IP-адреса DC", help = "Формат: номер DC и адрес, через запятую") {
                         NfInputField(
@@ -463,6 +499,23 @@ fun TgProxyTab(
                 }
             )
             NfDivider()
+            NfSwitchRow(
+                title = "Cloudflare без TLS",
+                newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.TG_BLOCKS,
+                subtitle = "Подключаться через порт 80, если не вышло, то как обычно. Помогает, когда оператор режет Cloudflare",
+                checked = cfPlain,
+                onCheckedChange = { checked ->
+                    if (BypassGuard.isActive()) {
+                        BypassGuard.notifyBlocked(context)
+                        return@NfSwitchRow
+                    }
+                    cfPlain = checked
+                    val prefs = context.getSharedPreferences(context.packageName + "_preferences", android.content.Context.MODE_PRIVATE)
+                    com.rupleide.netfix.core.compat.CompatibilityManager.setFeature(prefs, com.rupleide.netfix.core.compat.CompatFeature.TgProxyCfPlain, checked)
+                    TgProxyController.restartAsync(context)
+                }
+            )
+            NfDivider()
             com.rupleide.netfix.ui.components.NfRow(
                 title = "Серверы Cloudflare",
                 newId = com.rupleide.netfix.core.whatsnew.WhatsNewIds.CF_SERVERS,
@@ -522,6 +575,18 @@ fun TgProxyTab(
             onDismiss = { showCfServers = false },
             onPinnedChange = { cfPinned = it }
         )
+    }
+}
+
+private fun dcAddressesLine(context: Context, result: com.rupleide.netfix.core.tgproxy.DcAddressesRefresh?): String {
+    val shown = com.rupleide.netfix.core.tgproxy.TgDcAddresses.current(context).split(',').joinToString(", ")
+    val checkedAt = com.rupleide.netfix.core.tgproxy.TgDcAddresses.checkedAt(context)
+    val whenText = if (checkedAt > 0) "проверено " + java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale("ru")).format(java.util.Date(checkedAt)) else "встроенные"
+    return when (result) {
+        com.rupleide.netfix.core.tgproxy.DcAddressesRefresh.Updated -> "Обновлены: $shown"
+        com.rupleide.netfix.core.tgproxy.DcAddressesRefresh.Same -> "Актуальные: $shown"
+        com.rupleide.netfix.core.tgproxy.DcAddressesRefresh.Failed -> "GitHub недоступен, оставил $shown"
+        null -> "$shown · $whenText"
     }
 }
 

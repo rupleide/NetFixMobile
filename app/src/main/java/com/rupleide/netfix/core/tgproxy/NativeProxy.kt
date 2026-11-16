@@ -16,6 +16,10 @@ interface ProxyLibrary : Library {
     fun SetPowerSave(enabled: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
     fun SetCfProxyConfig(enabled: Int, priority: Int, userDomain: String)
+    fun SetCfFrontIps(ips: String)
+    fun ForgetCfFront()
+    fun SetCfPlainFirst(enabled: Int)
+    fun SetDirectFastFail(enabled: Int)
     fun GetSecretWithPrefix(): Pointer?
     fun GetStats(): Pointer?
     fun FreeString(p: Pointer)
@@ -58,6 +62,34 @@ object NativeProxy {
             if (priority) 1 else 0,
             userDomain
         )
+    }
+
+    fun setCfFrontIps(ips: List<String>) {
+        try {
+            ProxyLibrary.INSTANCE.SetCfFrontIps(ips.joinToString(","))
+        } catch (_: UnsatisfiedLinkError) {
+        }
+    }
+
+    fun setCfPlainFirst(enabled: Boolean) {
+        try {
+            ProxyLibrary.INSTANCE.SetCfPlainFirst(if (enabled) 1 else 0)
+        } catch (_: UnsatisfiedLinkError) {
+        }
+    }
+
+    fun setDirectFastFail(enabled: Boolean) {
+        try {
+            ProxyLibrary.INSTANCE.SetDirectFastFail(if (enabled) 1 else 0)
+        } catch (_: UnsatisfiedLinkError) {
+        }
+    }
+
+    fun forgetCfFront() {
+        try {
+            ProxyLibrary.INSTANCE.ForgetCfFront()
+        } catch (_: UnsatisfiedLinkError) {
+        }
     }
 
     fun getSecretWithPrefix(): String? {

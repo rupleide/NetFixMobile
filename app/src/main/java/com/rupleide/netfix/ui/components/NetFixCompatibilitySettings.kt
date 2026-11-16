@@ -140,6 +140,10 @@ private fun featureTitle(feature: CompatFeature): String = when (feature) {
     CompatFeature.BatterySaver -> "Экономия батареи"
     CompatFeature.YoutubeVideoStrategies -> "Новые способы для видео YouTube"
     CompatFeature.VideoFastFail -> "Быстрый старт видео YouTube"
+    CompatFeature.TgProxyCfFront -> "Запасной путь для Telegram"
+    CompatFeature.TgProxyDefaultDc -> "Прямые адреса Telegram"
+    CompatFeature.TgProxyCfPlain -> "Cloudflare без TLS для Telegram"
+    CompatFeature.ScanSecureResolve -> "Подбор при подмене DNS"
 }
 
 private fun featureSubtitle(feature: CompatFeature): String = when (feature) {
@@ -160,6 +164,10 @@ private fun featureSubtitle(feature: CompatFeature): String = when (feature) {
     CompatFeature.BatterySaver -> "При выключенном экране прокси Telegram не держит лишние соединения"
     CompatFeature.YoutubeVideoStrategies -> "Подбор пробует способы, которые открывают серверы видео YouTube"
     CompatFeature.VideoFastFail -> "YouTube не ждёт заблокированный сервер видео, а зависшее видео перезапускается само"
+    CompatFeature.TgProxyCfFront -> "Если оператор закрыл серверы прокси Telegram, NetFix найдёт рабочий путь"
+    CompatFeature.TgProxyDefaultDc -> "При автовыборе адресов DC прокси сначала подключается к Telegram напрямую, это быстрее"
+    CompatFeature.TgProxyCfPlain -> "Прокси Telegram подключается к Cloudflare через порт 80, если не вышло, то как раньше"
+    CompatFeature.ScanSecureResolve -> "Если сеть не отдаёт адрес YouTube, подбор и помощник узнают его сами и проверяют заново"
 }
 
 private fun featureIcon(feature: CompatFeature) = when (feature) {
@@ -180,9 +188,13 @@ private fun featureIcon(feature: CompatFeature) = when (feature) {
     CompatFeature.BatterySaver -> Icons.Default.BatteryChargingFull
     CompatFeature.YoutubeVideoStrategies -> Icons.Default.AutoAwesome
     CompatFeature.VideoFastFail -> Icons.Default.PlayCircle
+    CompatFeature.TgProxyCfFront -> Icons.Default.Cloud
+    CompatFeature.TgProxyDefaultDc -> Icons.Default.Hub
+    CompatFeature.TgProxyCfPlain -> Icons.Default.Cloud
+    CompatFeature.ScanSecureResolve -> Icons.Default.Dns
 }
 
-private val featuresWithOwnControl = setOf(CompatFeature.SystemTunnelDns, CompatFeature.SecureDns)
+private val featuresWithOwnControl = setOf(CompatFeature.SystemTunnelDns, CompatFeature.SecureDns, CompatFeature.TgProxyCfPlain)
 
 private fun dnsModeLabel(mode: TunnelDnsMode, customName: String?): String = when (mode) {
     TunnelDnsMode.System -> "Системный"
@@ -288,7 +300,7 @@ fun ColumnScope.CompatibilitySettingsRows(
 @Composable
 private fun ColumnScope.CompatibilityAdvancedRows(state: CompatibilitySettingsState) {
     NfDivider()
-    CompatFeature.versions.forEach { version ->
+    CompatFeature.versions.reversed().forEach { version ->
         VersionGroupLabel("Новое в $version")
         CompatFeature.inVersion(version).filterNot { it in featuresWithOwnControl }.forEach { feature ->
             NfSwitchRow(

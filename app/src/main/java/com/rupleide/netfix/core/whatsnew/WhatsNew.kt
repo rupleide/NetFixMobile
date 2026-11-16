@@ -1,6 +1,6 @@
 package com.rupleide.netfix.core.whatsnew
 
-enum class WhatsNewTarget { None, Help, YoutubeTab, SettingsLaunch, SettingsDns, SettingsCompat }
+enum class WhatsNewTarget { None, Help, YoutubeTab, TelegramTab, SettingsLaunch, SettingsDns, SettingsCompat }
 
 data class WhatsNewItem(
     val id: String,
@@ -33,10 +33,62 @@ object WhatsNewIds {
     const val BATTERY = "battery_saver"
     const val VIDEO_START = "video_fast_start"
     const val WHATS_NEW = "whats_new"
+    const val TG_DIRECT = "tg_direct"
+    const val TG_BLOCKS = "tg_blocks"
+    const val TG_WAKE = "tg_wake"
+    const val TG_DC_ADDRESSES = "tg_dc_addresses"
+    const val HELP_TELEGRAM = "help_telegram"
+    const val FIXES_106 = "fixes_106"
 }
 
 object WhatsNew {
     val releases: List<WhatsNewRelease> = listOf(
+        WhatsNewRelease(
+            version = "1.0.6",
+            items = listOf(
+                WhatsNewItem(
+                    id = WhatsNewIds.TG_BLOCKS,
+                    title = "Telegram работает при новых блокировках",
+                    text = "Операторы начали закрывать серверы, через которые работает прокси, и Telegram зависал на «Подключение…». Теперь NetFix подключается к ним по-другому, а если и так закрыто, сам находит рабочий адрес."
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.TG_DIRECT,
+                    title = "Telegram подключается сразу",
+                    text = "При автовыборе адресов DC прокси сначала идёт к Telegram напрямую, как в tg-ws-proxy на компьютере. Вписывать адреса вручную больше не нужно."
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.TG_WAKE,
+                    title = "Без долгого «Подключение…» после сна",
+                    text = "Раньше после блокировки экрана или смены Wi-Fi на мобильную Telegram долго не мог подключиться. Теперь NetFix готовит соединения заранее и помнит, что работает в каждой сети."
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.TG_DC_ADDRESSES,
+                    title = "Адреса Telegram обновляются сами",
+                    text = "Если Telegram сменит адреса серверов, NetFix подтянет новые сам, раз в день. Проверить сразу можно кнопкой «Адреса Telegram».",
+                    target = WhatsNewTarget.TelegramTab,
+                    openLabel = "Открыть вкладку Telegram"
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.HELP_TELEGRAM,
+                    title = "Помощник лучше чинит Telegram",
+                    text = "Новая проблема «Telegram медленно грузит фото и видео». А если не работает YouTube, помощник сначала спросит, нужен ли вам Discord: без него способ находится быстрее.",
+                    target = WhatsNewTarget.Help,
+                    openLabel = "Открыть помощник"
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.FIXES_106,
+                    title = "Мелкие исправления",
+                    text = "Пинг на главной больше не зависает на «Измеряем», на маленьких экранах надписи не вылезают за края, а проверка способов точнее там, где провайдер мешает открывать сайты."
+                ),
+                WhatsNewItem(
+                    id = WhatsNewIds.COMPAT,
+                    title = "Не заработало после обновления?",
+                    text = "Если в окне после обновления вы нажали «Пропустить», новое для Telegram выключено. Включите его: «Работа сети», затем «Всё новое».",
+                    target = WhatsNewTarget.SettingsCompat,
+                    openLabel = "Открыть «Работа сети»"
+                )
+            )
+        ),
         WhatsNewRelease(
             version = "1.0.5",
             items = listOf(
@@ -166,6 +218,13 @@ object WhatsNew {
 
     fun releaseFor(versionName: String): WhatsNewRelease? = releases.firstOrNull { it.version == versionName }
 
-    fun isNew(id: String, versionName: String): Boolean =
-        releaseFor(versionName)?.items?.any { it.id == id } == true || (id == WhatsNewIds.WHATS_NEW && releaseFor(versionName) != null)
+    fun isNew(id: String, versionName: String): Boolean {
+        if (id == WhatsNewIds.WHATS_NEW) return releaseFor(versionName) != null
+        val activeReleases = when (versionName) {
+            "1.0.5" -> releases.filter { it.version == "1.0.5" }
+            "1.0.6" -> releases.filter { it.version == "1.0.6" || it.version == "1.0.5" }
+            else -> listOfNotNull(releaseFor(versionName))
+        }
+        return activeReleases.any { r -> r.items.any { it.id == id } }
+    }
 }

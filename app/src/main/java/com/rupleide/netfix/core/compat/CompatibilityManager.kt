@@ -30,7 +30,11 @@ enum class CompatFeature(val storageKey: String, val sinceVersion: String) {
     EthernetScan("compat_ethernet_scan", "1.0.5"),
     ScanQuickFallback("compat_scan_quick_fallback", "1.0.5"),
     SystemTunnelDns("compat_system_tunnel_dns", "1.0.5"),
-    DiscordOffOnTv("compat_discord_off_on_tv", "1.0.5");
+    DiscordOffOnTv("compat_discord_off_on_tv", "1.0.5"),
+    TgProxyCfFront("compat_tg_proxy_cf_front", "1.0.6"),
+    TgProxyDefaultDc("compat_tg_proxy_default_dc", "1.0.6"),
+    TgProxyCfPlain("compat_tg_proxy_cf_plain", "1.0.6"),
+    ScanSecureResolve("compat_scan_secure_resolve", "1.0.6");
 
     companion object {
         fun inVersion(version: String): List<CompatFeature> = entries.filter { it.sinceVersion == version }
@@ -134,6 +138,18 @@ object CompatibilityManager {
 
     fun tgProxyWatchdogEnabled(prefs: SharedPreferences): Boolean =
         featureEnabled(prefs, CompatFeature.TgProxyWatchdog)
+
+    fun tgProxyCfFrontEnabled(prefs: SharedPreferences): Boolean =
+        featureEnabled(prefs, CompatFeature.TgProxyCfFront)
+
+    fun tgProxyDefaultDcEnabled(prefs: SharedPreferences): Boolean =
+        featureEnabled(prefs, CompatFeature.TgProxyDefaultDc)
+
+    fun tgProxyCfPlainEnabled(prefs: SharedPreferences): Boolean =
+        featureEnabled(prefs, CompatFeature.TgProxyCfPlain)
+
+    fun scanSecureResolveEnabled(prefs: SharedPreferences): Boolean =
+        featureEnabled(prefs, CompatFeature.ScanSecureResolve)
 
     fun ethernetScanEnabled(prefs: SharedPreferences): Boolean =
         featureEnabled(prefs, CompatFeature.EthernetScan)

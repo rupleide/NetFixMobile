@@ -589,6 +589,27 @@ object HelpActions {
             HelpFix.TunnelDnsBest -> chooseTunnelDns(app, dnsTarget, next = false, useSaved = useSaved)
             HelpFix.TunnelDnsNext -> chooseTunnelDns(app, dnsTarget, next = true, useSaved = useSaved)
             HelpFix.RescanNetwork -> rescan(app)
+            HelpFix.DiscordNotNeeded -> {
+                prefs.edit().putBoolean(StrategyTester.KEY_SCAN_CHECK_DISCORD, false).apply()
+                rescan(app)
+            }
+            HelpFix.TgNewMethods -> {
+                listOf(CompatFeature.TgProxyDefaultDc, CompatFeature.TgProxyCfFront, CompatFeature.TgProxyCfPlain)
+                    .forEach { CompatibilityManager.setFeature(prefs, it, true) }
+                HelpApplyResult.Done
+            }
+            HelpFix.TgCfFrontOff -> {
+                CompatibilityManager.setFeature(prefs, CompatFeature.TgProxyCfFront, false)
+                HelpApplyResult.Done
+            }
+            HelpFix.TgCfPlainOff -> {
+                CompatibilityManager.setFeature(prefs, CompatFeature.TgProxyCfPlain, false)
+                HelpApplyResult.Done
+            }
+            HelpFix.TgDcAuto -> {
+                TgProxyController.setDcIps(app, "")
+                HelpApplyResult.Done
+            }
             HelpFix.EnableDiscordCheck -> {
                 prefs.edit().putBoolean(StrategyTester.KEY_SCAN_CHECK_DISCORD, true).apply()
                 CompatibilityManager.setDiscordEchCheck(prefs, true)

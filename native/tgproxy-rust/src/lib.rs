@@ -1,3 +1,4 @@
+pub mod cffront;
 pub mod cfproxy;
 pub mod config;
 pub mod crypto;
@@ -196,6 +197,9 @@ pub extern "C" fn FlushPools() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         proxy::cf_pool_refill_active();
+        if let Some(pool) = state_cell().lock().as_ref().map(|s| s.pool.clone()) {
+            proxy::rewarm(pool);
+        }
     });
 }
 
@@ -219,8 +223,12 @@ pub extern "C" fn SetPowerSave(enabled: c_int) {
             }
         });
     } else {
+        let ws_pool = state_cell().lock().as_ref().map(|s| s.pool.clone());
         runtime().spawn(async move {
             proxy::cf_pool_refill_active();
+            if let Some(pool) = ws_pool {
+                proxy::rewarm(pool);
+            }
         });
     }
 }
@@ -261,6 +269,31 @@ pub unsafe extern "C" fn SetCfProxyConfig(
         cfg.domains = vec![user_domain.clone()];
         cfg.active = user_domain;
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn SetCfFrontIps(c_ips: *const c_char) {
+    let ips = cstr_to_string(c_ips)
+        .split(',')
+        .map(|ip| ip.trim().to_string())
+        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+        .collect();
+    cffront::set_front_ips(ips);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn SetCfPlainFirst(enabled: c_int) {
+    cffront::set_plain_first(enabled != 0);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ForgetCfFront() {
+    cffront::forget_network_state();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn SetDirectFastFail(enabled: c_int) {
+    cffront::set_direct_fast_fail(enabled != 0);
 }
 
 /// # Safety

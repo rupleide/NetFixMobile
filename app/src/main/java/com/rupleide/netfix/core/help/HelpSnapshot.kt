@@ -25,6 +25,7 @@ object HelpSnapshot {
         "tgproxy_pool_size",
         "tgproxy_port",
         "tgproxy_port_moved_from",
+        "tgproxy_dc_ips",
         "tg_proxy_wakelock_enabled",
         CompatibilityManager.KEY_BEHAVIOR_VERSION,
         CompatibilityManager.KEY_TUNNEL_DNS_MODE,
@@ -40,7 +41,11 @@ object HelpSnapshot {
         "tgproxy_pool_size",
         "tgproxy_port",
         "tg_proxy_wakelock_enabled",
-        CompatFeature.FreeProxyPort.storageKey
+        "tgproxy_dc_ips",
+        CompatFeature.FreeProxyPort.storageKey,
+        CompatFeature.TgProxyDefaultDc.storageKey,
+        CompatFeature.TgProxyCfFront.storageKey,
+        CompatFeature.TgProxyCfPlain.storageKey
     )
 
     fun capture(source: SharedPreferences, keys: Collection<String> = NETWORK_KEYS): Map<String, Any?> {

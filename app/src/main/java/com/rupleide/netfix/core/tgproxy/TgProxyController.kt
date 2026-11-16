@@ -12,6 +12,8 @@ import java.util.concurrent.Executors
 object TgProxyController {
     const val DEFAULT_PORT = 1443
     const val DEFAULT_BIND_IP = "127.0.0.1"
+    const val DEFAULT_DC_IPS = "2:149.154.167.220,4:149.154.167.220"
+    private const val NETWORK_LATENCY_TIMEOUT_MS = 1500
     private const val NATIVE_ALREADY_RUNNING = -1
     private const val NATIVE_BIND_FAILED = -3
     private const val NEARBY_PORT_ATTEMPTS = 20
@@ -65,6 +67,25 @@ object TgProxyController {
 
     fun getDcIps(context: Context): String {
         return getSharedPrefs(context).getString("tgproxy_dc_ips", "") ?: ""
+    }
+
+    fun effectiveDcIps(context: Context): String =
+        dcIpsForCore(getDcIps(context), CompatibilityManager.tgProxyDefaultDcEnabled(getSharedPrefs(context)), TgDcAddresses.current(context))
+
+    fun dcIpsForCore(userDcIps: String, defaultDcEnabled: Boolean, defaultDcIps: String = DEFAULT_DC_IPS): String =
+        if (userDcIps.isBlank() && defaultDcEnabled) defaultDcIps else userDcIps
+
+    fun refreshDcAddressesInBackground(context: Context, force: Boolean = false, onDone: (DcAddressesRefresh?) -> Unit = {}) {
+        val appContext = context.applicationContext
+        if (!CompatibilityManager.tgProxyDefaultDcEnabled(getSharedPrefs(appContext))) {
+            onDone(null)
+            return
+        }
+        Thread({
+            val result = if (force) TgDcAddresses.refresh(appContext) else TgDcAddresses.refreshIfStale(appContext)
+            if (result == DcAddressesRefresh.Updated && isRunning && getDcIps(appContext).isBlank()) restartAsync(appContext)
+            onDone(result)
+        }, "tg-dc-addresses").start()
     }
 
     fun setDcIps(context: Context, value: String) {
@@ -140,6 +161,21 @@ object TgProxyController {
         }
     }
 
+    private val latencyTargets = listOf("1.1.1.1" to 443, "8.8.8.8" to 443, "77.88.8.8" to 443)
+
+    fun measureNetworkLatency(): Int =
+        latencyTargets.firstNotNullOfOrNull { (host, port) ->
+            val startTime = System.currentTimeMillis()
+            try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(host, port), NETWORK_LATENCY_TIMEOUT_MS)
+                    (System.currentTimeMillis() - startTime).toInt()
+                }
+            } catch (_: Exception) {
+                null
+            }
+        } ?: -1
+
     fun measureLatency(host: String, port: Int): Int {
         val startTime = System.currentTimeMillis()
         return try {
@@ -164,7 +200,7 @@ object TgProxyController {
         }
         val secretKey = getOrGenerateSecret(context)
         val cacheDir = context.cacheDir.absolutePath
-        val dcIps = getDcIps(context)
+        val dcIps = effectiveDcIps(context)
         var port = getPort(context)
         val poolSize = getPoolSize(context)
         val cfEnabled = isCfEnabled(context)
@@ -179,6 +215,7 @@ object TgProxyController {
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, pinnedCfDomain(appContext).orEmpty())
+                TgCfFront.apply(appContext)
                 var code = NativeProxy.startProxy(DEFAULT_BIND_IP, port, dcIps, secretKey, 1)
                 if (code == NATIVE_ALREADY_RUNNING && !isRunning) {
                     Log.w("TgProxyController", "Нативное ядро уже запущено, но не принадлежит нам: перезапускаю")
@@ -215,6 +252,7 @@ object TgProxyController {
                 startWatchdog(appContext)
                 com.rupleide.netfix.service.NetFixTileService.requestRefresh(appContext)
                 onSuccess()
+                refreshDcAddressesInBackground(appContext)
             } else {
                 Log.e("TgProxyController", "Не удалось запустить TG-прокси на порту $port")
                 onError()
@@ -285,7 +323,7 @@ object TgProxyController {
                 val code = NativeProxy.startProxy(
                     DEFAULT_BIND_IP,
                     getPort(appContext),
-                    getDcIps(appContext),
+                    effectiveDcIps(appContext),
                     getOrGenerateSecret(appContext),
                     1
                 )
@@ -340,6 +378,7 @@ object TgProxyController {
                 if (previous != null && previous != network) {
                     Log.i("TgProxyController", "Сеть сменилась: сбрасываю пул заранее открытых соединений")
                     NativeProxy.flushPools()
+                    TgCfFront.onNetworkChanged(appContext)
                     synchronized(recoveryPlanner) { recoveryPlanner.onNetworkChanged() }
                 }
             }

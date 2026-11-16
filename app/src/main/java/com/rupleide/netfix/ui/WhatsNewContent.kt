@@ -25,8 +25,12 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.SaveAlt
@@ -106,6 +110,12 @@ private fun WhatsNewIcon(id: String) {
                 WhatsNewIds.POLISH -> Icons.Default.AutoAwesome
                 WhatsNewIds.BATTERY -> Icons.Default.BatteryChargingFull
                 WhatsNewIds.VIDEO_START -> Icons.Default.PlayCircle
+                WhatsNewIds.TG_BLOCKS -> Icons.AutoMirrored.Filled.Send
+                WhatsNewIds.TG_DIRECT -> Icons.Default.Speed
+                WhatsNewIds.TG_WAKE -> Icons.Default.Bolt
+                WhatsNewIds.TG_DC_ADDRESSES -> Icons.Default.Refresh
+                WhatsNewIds.HELP_TELEGRAM -> Icons.Default.QuestionMark
+                WhatsNewIds.FIXES_106 -> Icons.Default.Build
                 else -> Icons.Default.Home
             }
             Icon(icon, contentDescription = null, tint = Nf.Text, modifier = Modifier.size(20.dp))

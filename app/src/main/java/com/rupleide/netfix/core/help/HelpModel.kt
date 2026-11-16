@@ -11,6 +11,7 @@ enum class HelpSymptom(val title: String, val subtitle: String, val needsAppPick
     YoutubeBrowser("YouTube в браузере", "Сайт youtube.com не открывается"),
     TelegramNoConnect("Telegram не подключается", "Вечное «Соединение…» или «Подключение к прокси»"),
     TelegramDrops("Telegram отваливается", "Работает, а потом пропадает, чаще на мобильной сети"),
+    TelegramSlowMedia("Telegram медленно грузит фото и видео", "Сообщения приходят, а картинки и видео долго грузятся"),
     Discord("Discord не работает", "Не грузится, нет звонков или вечное подключение"),
     OtherApp("Другое приложение не работает", "Instagram, WhatsApp, X, ChatGPT…", needsAppPick = true),
     BrokeApp("С NetFix сломалось приложение", "Без NetFix работает, с ним нет", needsAppPick = true),
@@ -45,6 +46,11 @@ enum class HelpFix(
     UseNextStrategy(HelpFixKind.Auto, "Включить лучший способ для YouTube", "Выберу по проверке на этой сети способ, где YouTube работает лучше всего. Если проверки ещё не было, сначала проверю способы, это пара минут.", changesStrategy = true),
     UseFasterVideoStrategy(HelpFixKind.Auto, "Включить способ, где видео быстрее", "Замерю скорость видео на лучших способах этой сети и включу самый быстрый. Это минута-две.", changesStrategy = true),
     RescanNetwork(HelpFixKind.Auto, "Подобрать способ заново", "Займёт 2–5 минут, на это время NetFix выключится.", changesStrategy = true),
+    DiscordNotNeeded(HelpFixKind.Auto, "Вам нужен Discord?", "Если нет, нажмите «Исправить», и YouTube, скорее всего, заработает. Когда способ подбирается сразу под Discord и YouTube, он пытается угодить обоим, и YouTube из-за этого работает не всегда. Выключу «Проверять Discord» и подберу способ только под YouTube, это 2–5 минут, NetFix на это время выключится. Discord нужен, нажмите «Пропустить».", changesStrategy = true),
+    TgNewMethods(HelpFixKind.Auto, "Включить новое для Telegram", "Прокси подключится к Telegram напрямую, а если оператор закрыл серверы, найдёт другой путь. Прокси перезапустится."),
+    TgCfFrontOff(HelpFixKind.Auto, "Выключить запасной путь для Telegram", "На некоторых сетях запасной путь работает медленнее обычного, и фото с видео грузятся долго. Выключу его, прокси перезапустится. Если Telegram перестанет подключаться, нажмите «Стало хуже», и я верну как было."),
+    TgCfPlainOff(HelpFixKind.Auto, "Выключить «Cloudflare без TLS»", "На некоторых сетях подключение без TLS медленнее обычного. Выключу его, прокси перезапустится."),
+    TgDcAuto(HelpFixKind.Auto, "Вернуть автовыбор адресов DC", "Сейчас адреса DC вписаны вручную, и они могли перестать работать. Верну автовыбор, прокси перезапустится."),
     UseDiscordStrategy(HelpFixKind.Auto, "Включить лучший способ для Discord", "Выберу по проверке на этой сети способ, где Discord работает лучше всего. Если проверки ещё не было, сначала проверю способы, это пара минут.", changesStrategy = true),
     UseAnotherDiscordStrategy(HelpFixKind.Auto, "Попробовать ещё один способ для Discord", "Включу следующий по качеству способ для Discord.", changesStrategy = true),
     ResetSettings(HelpFixKind.Auto, "Сбросить настройки NetFix", "Если после обновления ничего не работает, обычно помогает сброс. Способы, результаты проверок и список приложений сохранятся, NetFix перезапустится и заново подберёт способ."),
@@ -173,7 +179,11 @@ data class HelpFacts(
     val secureDnsOn: Boolean = true,
     val tgCfEnabled: Boolean = true,
     val tgCfPinned: String? = null,
-    val cloudflareFreezeRuledOut: Boolean = false
+    val cloudflareFreezeRuledOut: Boolean = false,
+    val tgNewMethodsOff: Boolean = false,
+    val tgCustomDc: Boolean = false,
+    val tgCfFrontOn: Boolean = false,
+    val tgCfPlainOn: Boolean = false
 ) {
     val currentProbeAllFailed: Boolean get() = currentProbe != null && currentProbe.youtubeOk == 0 && currentProbe.discordOk == 0
     val currentProbeYoutubeWeak: Boolean get() = currentProbe != null && currentProbe.youtubeOk * 4 < currentProbe.youtubeTotal * 3

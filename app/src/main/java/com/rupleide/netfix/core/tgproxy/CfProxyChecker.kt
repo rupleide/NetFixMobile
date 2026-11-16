@@ -72,9 +72,11 @@ object CfProxyChecker {
 
     fun checkAll(context: Context, onResult: (CfServerResult) -> Unit): List<CfServerResult> {
         val domains = knownDomains(context)
+        val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        val plainFirst = com.rupleide.netfix.core.compat.CompatibilityManager.tgProxyCfPlainEnabled(prefs)
         val pool = Executors.newFixedThreadPool(PARALLEL)
         return try {
-            val tasks = domains.map { domain -> Callable { probe(domain).also(onResult) } }
+            val tasks = domains.map { domain -> Callable { probe(domain, plainFirst).also(onResult) } }
             pool.invokeAll(tasks, CHECK_DEADLINE_SECONDS, TimeUnit.SECONDS).mapNotNull { future ->
                 try {
                     if (future.isCancelled) null else future.get()
@@ -90,10 +92,43 @@ object CfProxyChecker {
         }
     }
 
-    fun probe(baseDomain: String): CfServerResult {
+    private fun upgradeRequest(host: String): ByteArray {
+        val key = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        return ("GET /apiws HTTP/1.1\r\n" +
+            "Host: $host\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: ${Base64.getEncoder().encodeToString(key)}\r\n" +
+            "Sec-WebSocket-Version: 13\r\n" +
+            "Sec-WebSocket-Protocol: binary\r\n\r\n").toByteArray(Charsets.US_ASCII)
+    }
+
+    private fun resultFor(baseDomain: String, code: Int, elapsed: Long): CfServerResult = when (code) {
+        101 -> CfServerResult(baseDomain, CfServerState.Works, elapsed, "работает")
+        429 -> CfServerResult(baseDomain, CfServerState.Busy, elapsed, "перегружен")
+        0 -> CfServerResult(baseDomain, CfServerState.Fails, -1, "не ответил")
+        else -> CfServerResult(baseDomain, CfServerState.Fails, -1, "ответ $code")
+    }
+
+    private fun probePlain(baseDomain: String, host: String, address: InetAddress, started: Long): CfServerResult? = try {
+        Socket().use { raw ->
+            raw.connect(InetSocketAddress(address, 80), CONNECT_TIMEOUT_MS)
+            raw.soTimeout = CONNECT_TIMEOUT_MS
+            raw.getOutputStream().write(upgradeRequest(host))
+            raw.getOutputStream().flush()
+            val statusLine = BufferedReader(InputStreamReader(raw.getInputStream(), Charsets.US_ASCII)).readLine().orEmpty()
+            val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
+            resultFor(baseDomain, code, System.currentTimeMillis() - started).takeIf { it.state != CfServerState.Fails }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    fun probe(baseDomain: String, plainFirst: Boolean = false): CfServerResult {
         val host = "kws$PROBE_DC.$baseDomain"
         val started = System.currentTimeMillis()
         val address = resolve(host) ?: return CfServerResult(baseDomain, CfServerState.Fails, -1, "адрес не найден")
+        if (plainFirst) probePlain(baseDomain, host, address, started)?.let { return it }
         return try {
             Socket().use { raw ->
                 raw.connect(InetSocketAddress(address, 443), CONNECT_TIMEOUT_MS)
@@ -104,25 +139,11 @@ object CfProxyChecker {
                     if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, tls.session)) {
                         return CfServerResult(baseDomain, CfServerState.Fails, -1, "чужой сертификат")
                     }
-                    val key = ByteArray(16).also { SecureRandom().nextBytes(it) }
-                    val request = "GET /apiws HTTP/1.1\r\n" +
-                        "Host: $host\r\n" +
-                        "Upgrade: websocket\r\n" +
-                        "Connection: Upgrade\r\n" +
-                        "Sec-WebSocket-Key: ${Base64.getEncoder().encodeToString(key)}\r\n" +
-                        "Sec-WebSocket-Version: 13\r\n" +
-                        "Sec-WebSocket-Protocol: binary\r\n\r\n"
-                    tls.outputStream.write(request.toByteArray(Charsets.US_ASCII))
+                    tls.outputStream.write(upgradeRequest(host))
                     tls.outputStream.flush()
                     val statusLine = BufferedReader(InputStreamReader(tls.inputStream, Charsets.US_ASCII)).readLine().orEmpty()
                     val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
-                    val elapsed = System.currentTimeMillis() - started
-                    when (code) {
-                        101 -> CfServerResult(baseDomain, CfServerState.Works, elapsed, "работает")
-                        429 -> CfServerResult(baseDomain, CfServerState.Busy, elapsed, "перегружен")
-                        0 -> CfServerResult(baseDomain, CfServerState.Fails, -1, "не ответил")
-                        else -> CfServerResult(baseDomain, CfServerState.Fails, -1, "ответ $code")
-                    }
+                    resultFor(baseDomain, code, System.currentTimeMillis() - started)
                 }
             }
         } catch (_: java.net.SocketTimeoutException) {

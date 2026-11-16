@@ -132,6 +132,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 
 private const val AURA_CYCLE_SECONDS = 18f
+private const val LATENCY_FIRST_ATTEMPTS = 6
+private const val LATENCY_RETRY_MS = 3000L
+private const val LATENCY_SLOW_RETRY_MS = 30_000L
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOrbAura(
     auraClock: Float,
@@ -414,21 +417,25 @@ fun MainTab(
 
     var latencyMs by remember { mutableStateOf(-1) }
 
-    LaunchedEffect(currentStatus, performanceModeGlobal, lifecycleOwner) {
-        if (currentStatus != AppStatus.Running) {
+    LaunchedEffect(isRunning, performanceModeGlobal, lifecycleOwner) {
+        if (!isRunning) {
             latencyMs = -1
         } else {
             if (performanceModeGlobal) {
-                latencyMs = withContext(Dispatchers.IO) {
-                    TgProxyController.measureLatency("1.1.1.1", 53)
+                var failedAttempts = 0
+                while (latencyMs < 0) {
+                    latencyMs = withContext(Dispatchers.IO) { TgProxyController.measureNetworkLatency() }
+                    if (latencyMs < 0) {
+                        failedAttempts++
+                        delay(if (failedAttempts < LATENCY_FIRST_ATTEMPTS) LATENCY_RETRY_MS else LATENCY_SLOW_RETRY_MS)
+                    }
                 }
             } else {
                 lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                     while (true) {
-                        latencyMs = withContext(Dispatchers.IO) {
-                            TgProxyController.measureLatency("1.1.1.1", 53)
-                        }
-                        delay(20000)
+                        val measured = withContext(Dispatchers.IO) { TgProxyController.measureNetworkLatency() }
+                        if (measured >= 0 || latencyMs < 0) latencyMs = measured
+                        delay(if (measured >= 0) 20000L else LATENCY_RETRY_MS)
                     }
                 }
             }

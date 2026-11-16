@@ -172,12 +172,17 @@ object HelpMeasure {
 
     suspend fun videoSpeedCurrent(context: Context): com.rupleide.netfix.core.dpibypass.StreamProbeResult? =
         HelpProbes.onCurrentPath(context, null) { port ->
-            StreamChunkProbe.probe(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)), VIDEO_TIMEOUT_MS, {}, {})
+            StreamChunkProbe.probe(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)), VIDEO_TIMEOUT_MS, {}, {}, secureFallback(context))
         }
 
     suspend fun videoSpeed(context: Context, strategy: String): com.rupleide.netfix.core.dpibypass.StreamProbeResult? = withContext(Dispatchers.IO) {
         StrategyTester(context.applicationContext).withStrategyPort(strategy, null) { port ->
-            StreamChunkProbe.probe(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)), VIDEO_TIMEOUT_MS, {}, {})
+            StreamChunkProbe.probe(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)), VIDEO_TIMEOUT_MS, {}, {}, secureFallback(context))
         }
     }
+
+    private fun secureFallback(context: Context): Boolean =
+        com.rupleide.netfix.core.compat.CompatibilityManager.scanSecureResolveEnabled(
+            context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
+        )
 }

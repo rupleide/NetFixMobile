@@ -216,12 +216,19 @@ private fun LatencyColumn(
                     .clip(CircleShape)
                     .background(qualityColor)
             )
+            var qualitySize by remember(qualityText) { mutableStateOf(13f) }
             Text(
                 text = qualityText,
                 color = qualityColor,
                 fontFamily = NetFixFonts.Manrope,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp
+                fontSize = qualitySize.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = if (qualitySize > 9f) TextOverflow.Clip else TextOverflow.Ellipsis,
+                onTextLayout = { layout ->
+                    if (layout.didOverflowWidth && qualitySize > 9f) qualitySize -= 0.5f
+                }
             )
         }
     }
@@ -269,14 +276,19 @@ private fun StrategyColumn(
                 modifier = Modifier.weight(1f),
                 label = "strategyName"
             ) { shownName ->
+                var nameSize by remember(shownName) { mutableStateOf(20f) }
                 Text(
                     text = shownName,
                     color = PrimaryText,
                     fontFamily = NetFixFonts.Manrope,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
+                    fontSize = nameSize.sp,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    softWrap = false,
+                    overflow = if (nameSize > 12f) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    onTextLayout = { layout ->
+                        if (layout.didOverflowWidth && nameSize > 12f) nameSize -= 1f
+                    }
                 )
             }
             Icon(

@@ -199,13 +199,15 @@ fun InfoTab(
             when (item.target) {
                 com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsLaunch,
                 com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsDns,
-                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsCompat -> com.rupleide.netfix.core.whatsnew.WhatsNew.settingRowFor(item.id)
+                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsCompat,
+                com.rupleide.netfix.core.whatsnew.WhatsNewTarget.TelegramTab -> com.rupleide.netfix.core.whatsnew.WhatsNew.settingRowFor(item.id)
                 else -> null
             }
         )
         when (item.target) {
             com.rupleide.netfix.core.whatsnew.WhatsNewTarget.Help -> showHelp = true
             com.rupleide.netfix.core.whatsnew.WhatsNewTarget.YoutubeTab -> com.rupleide.netfix.data.onNavigateToTab?.invoke(2)
+            com.rupleide.netfix.core.whatsnew.WhatsNewTarget.TelegramTab -> com.rupleide.netfix.data.onNavigateToTab?.invoke(1)
             com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsLaunch -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 0
             com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsDns -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 4
             com.rupleide.netfix.core.whatsnew.WhatsNewTarget.SettingsCompat -> com.rupleide.netfix.data.settingsSectionRequestGlobal = 5

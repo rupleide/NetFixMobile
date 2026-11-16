@@ -490,7 +490,8 @@ class StrategyTester(private val context: Context) {
             Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)),
             FULL_SITE_TIMEOUT_MS,
             register = { activeConnections.add(it) },
-            unregister = { activeConnections.remove(it) }
+            unregister = { activeConnections.remove(it) },
+            secureResolveFallback = secureResolveFallback
         )
 
     private fun describeStream(stream: StreamProbeResult): String =
@@ -551,12 +552,22 @@ class StrategyTester(private val context: Context) {
         Log.d("StrategyTester", ScanFailureReason.formatLogLine(site, reason, detail, diagnosticStrategy))
     }
 
+    private val secureResolveFallback: Boolean
+        get() = CompatibilityManager.scanSecureResolveEnabled(context.getPreferences())
+
     private fun isSiteFullyReachable(site: String, proxyPort: Int, timeoutMs: Int): Boolean {
+        var hostUnreachable = false
+        if (siteFullyReachableOnce(site, proxyPort, timeoutMs, resolved = false) { hostUnreachable = ScanResolve.isHostUnreachable(it) }) return true
+        if (!secureResolveFallback || !hostUnreachable) return false
+        return siteFullyReachableOnce(site, proxyPort, timeoutMs, resolved = true) {}
+    }
+
+    private fun siteFullyReachableOnce(site: String, proxyPort: Int, timeoutMs: Int, resolved: Boolean, onError: (Throwable) -> Unit): Boolean {
         val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", proxyPort))
         var connection: HttpURLConnection? = null
         var responseCode = -1
         return try {
-            connection = URL("https://$site").openConnection(socksProxy) as HttpURLConnection
+            connection = ScanResolve.open("https://$site", socksProxy, resolved)
             activeConnections.add(connection)
             connection.connectTimeout = timeoutMs
             connection.readTimeout = timeoutMs
@@ -592,7 +603,8 @@ class StrategyTester(private val context: Context) {
             }
             complete
         } catch (e: Exception) {
-            reportCheckFailure(site, ScanFailureReason.fromThrowable(e), e.toString())
+            onError(e)
+            reportCheckFailure(site, ScanFailureReason.fromThrowable(e), (if (resolved) "через DoH: " else "") + e.toString())
             false
         } finally {
             connection?.let { activeConnections.remove(it) }

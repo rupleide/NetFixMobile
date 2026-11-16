@@ -693,12 +693,18 @@ private fun ProxyNavigationBar(
                                 }
                             }
                             Spacer(modifier = Modifier.height(4.dp))
+                            val labelStyle = if (tv) MaterialTheme3TypeOverride.labelSmall.copy(fontSize = 12.sp, lineHeight = 15.sp) else MaterialTheme3TypeOverride.labelSmall
+                            var labelScale by androidx.compose.runtime.remember(item.label) { androidx.compose.runtime.mutableFloatStateOf(1f) }
                             Text(
                                 text = item.label,
-                                style = if (tv) MaterialTheme3TypeOverride.labelSmall.copy(fontSize = 12.sp, lineHeight = 15.sp) else MaterialTheme3TypeOverride.labelSmall,
+                                style = labelStyle.copy(fontSize = labelStyle.fontSize * labelScale),
                                 fontWeight = if (emphasis > 0.55f) FontWeight.SemiBold else FontWeight.Medium,
                                 color = tabIconColor,
-                                maxLines = 1
+                                maxLines = 1,
+                                softWrap = false,
+                                onTextLayout = { layout ->
+                                    if (layout.didOverflowWidth && labelScale > 0.75f) labelScale -= 0.05f
+                                }
                             )
                         }
                     }

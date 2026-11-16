@@ -77,16 +77,29 @@ object StreamChunkProbe {
     private const val APP_FALLBACK_WAIT_MS = 4_000L
     private const val FALLBACK_SPEED_WEIGHT = 0.2
 
-    fun probe(proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit): StreamProbeResult {
+    fun probe(
+        proxy: Proxy,
+        timeoutMs: Int,
+        register: (HttpURLConnection) -> Unit,
+        unregister: (HttpURLConnection) -> Unit,
+        secureResolveFallback: Boolean = false
+    ): StreamProbeResult {
+        val first = probeOnce(proxy, timeoutMs, register, unregister, resolved = false)
+        if (first.loaded || !secureResolveFallback || !ScanResolve.isHostUnreachable(first.failure)) return first
+        val again = probeOnce(proxy, timeoutMs, register, unregister, resolved = true)
+        return if (again.loaded) again else first
+    }
+
+    private fun probeOnce(proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit, resolved: Boolean): StreamProbeResult {
         val chunkUrl = try {
-            requestChunkUrl(proxy, timeoutMs, register, unregister)
+            requestChunkUrl(proxy, timeoutMs, register, unregister, resolved)
         } catch (e: Exception) {
             return StreamProbeResult.failed("player: $e")
         } ?: return StreamProbeResult.failed("player: нет ссылки на поток")
-        val primary = downloadChunk(chunkUrl, proxy, timeoutMs, register, unregister)
+        val primary = downloadChunk(chunkUrl, proxy, timeoutMs, register, unregister, resolved)
         if (primary.loaded) return primary
         val fallback = fallbackNodeUrl(chunkUrl) ?: return primary
-        val retried = downloadChunk(fallback, proxy, timeoutMs, register, unregister)
+        val retried = downloadChunk(fallback, proxy, timeoutMs, register, unregister, resolved)
         return if (retried.loaded) retried.copy(viaFallback = true) else primary
     }
 
@@ -103,8 +116,8 @@ object StreamChunkProbe {
         return "https://rr$serverIndex---$backupNode.googlevideo.com/$path"
     }
 
-    private fun requestChunkUrl(proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit): String? {
-        val connection = URL(PLAYER_URL).openConnection(proxy) as HttpURLConnection
+    private fun requestChunkUrl(proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit, resolved: Boolean): String? {
+        val connection = ScanResolve.open(PLAYER_URL, proxy, resolved)
         register(connection)
         try {
             connection.connectTimeout = timeoutMs
@@ -126,8 +139,12 @@ object StreamChunkProbe {
         }
     }
 
-    private fun downloadChunk(chunkUrl: String, proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit): StreamProbeResult {
-        val connection = URL(chunkUrl).openConnection(proxy) as HttpURLConnection
+    private fun downloadChunk(chunkUrl: String, proxy: Proxy, timeoutMs: Int, register: (HttpURLConnection) -> Unit, unregister: (HttpURLConnection) -> Unit, resolved: Boolean): StreamProbeResult {
+        val connection = try {
+            ScanResolve.open(chunkUrl, proxy, resolved)
+        } catch (e: Exception) {
+            return StreamProbeResult.failed("поток: $e")
+        }
         register(connection)
         var received = 0
         try {
