@@ -258,10 +258,12 @@ pub unsafe extern "C" fn SetCfProxyCacheDir(c_cache_dir: *const c_char) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SetCfProxyConfig(
     enabled: c_int,
-    _priority: c_int,
+    priority: c_int,
     c_user_domain: *const c_char,
 ) {
     CFPROXY_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    CF_PRIORITY.store(priority != 0, Ordering::Relaxed);
+    cffront::set_direct_fast_fail(priority != 0);
     let user_domain = cstr_to_string(c_user_domain);
     let mut cfg = CFPROXY.write();
     cfg.user_domain = user_domain.clone();

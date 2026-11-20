@@ -20,6 +20,7 @@ use tokio_rustls::TlsConnector;
 // WS opcodes
 // ---------------------------------------------------------------------------
 
+pub const OP_CONTINUATION: u8 = 0x0;
 pub const OP_TEXT: u8 = 0x1;
 pub const OP_BINARY: u8 = 0x2;
 pub const OP_CLOSE: u8 = 0x8;
@@ -168,7 +169,7 @@ impl From<std::io::Error> for WsError {
 
 pub trait WsIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> WsIo for T {}
-type WsStream = Box<dyn WsIo>;
+pub type WsStream = Box<dyn WsIo>;
 
 pub struct RawWebSocket {
     reader: tokio::sync::Mutex<BufReader<tokio::io::ReadHalf<WsStream>>>,
@@ -269,7 +270,12 @@ impl RawWebSocket {
                     continue;
                 }
                 OP_PONG => continue,
-                OP_TEXT | OP_BINARY => return Ok(payload),
+                OP_CONTINUATION | OP_TEXT | OP_BINARY => {
+                    if payload.is_empty() {
+                        continue;
+                    }
+                    return Ok(payload);
+                }
                 _ => {}
             }
         }
@@ -332,7 +338,12 @@ impl RawWebSocket {
                     continue;
                 }
                 OP_PONG => continue,
-                OP_TEXT | OP_BINARY => return Ok(payload),
+                OP_CONTINUATION | OP_TEXT | OP_BINARY => {
+                    if payload.is_empty() {
+                        continue;
+                    }
+                    return Ok(payload);
+                }
                 _ => continue,
             }
         }
@@ -584,7 +595,7 @@ pub async fn ws_connect_plain(
     ws_handshake(Box::new(raw_conn), domain, path, timeout).await
 }
 
-async fn ws_handshake(
+pub(crate) async fn ws_handshake(
     stream: WsStream,
     domain: &str,
     path: &str,
@@ -743,4 +754,66 @@ pub async fn connect_one_ws(ip: &str, domains: &[String]) -> Option<RawWebSocket
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_recv_with_timeout_delivers_fragmented_continuation_frames() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut req_buf = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut s, &mut req_buf).await.unwrap();
+            s.write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+            )
+            .await
+            .unwrap();
+            // Frame 1: FIN=0, opcode=2 (OP_BINARY), payload="abc"
+            s.write_all(&[0x02, 0x03, b'a', b'b', b'c']).await.unwrap();
+            // Frame 2: FIN=1, opcode=0 (OP_CONTINUATION), payload="def"
+            s.write_all(&[0x80, 0x03, b'd', b'e', b'f']).await.unwrap();
+            // Keep socket open briefly so recv doesn't race with TCP FIN
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read_half, write_half) = tokio::io::split(Box::new(stream) as WsStream);
+        let mut bufreader = BufReader::with_capacity(4096, read_half);
+        let mut write_half = write_half;
+        write_half
+            .write_all(b"GET /apiws HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        loop {
+            let line = read_line(&mut bufreader).await.unwrap();
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+        let ws = RawWebSocket {
+            reader: tokio::sync::Mutex::new(bufreader),
+            writer: tokio::sync::Mutex::new(write_half),
+            closed: AtomicBool::new(false),
+        };
+
+        let mut got = Vec::new();
+        while got.len() < 6 {
+            let chunk = ws
+                .recv_with_timeout(Duration::from_secs(1))
+                .await
+                .expect("expected continuation frame before timeout");
+            got.extend_from_slice(&chunk);
+        }
+        assert_eq!(got, b"abcdef");
+        srv.await.unwrap();
+    }
 }
