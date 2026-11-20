@@ -8,7 +8,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -60,6 +60,12 @@ pub fn ws_domains(dc: i32, is_media: bool) -> Vec<String> {
             format!("kws{}-1.web.telegram.org", effective_dc),
         ]
     }
+}
+
+pub fn should_prefer_cf() -> bool {
+    CFPROXY_ENABLED.load(Ordering::Relaxed)
+        && CF_PRIORITY.load(Ordering::Relaxed)
+        && !CFPROXY.read().domains.is_empty()
 }
 
 pub fn media_tag(is_media: bool) -> &'static str {
@@ -239,7 +245,7 @@ impl WsPool {
     }
 
     pub async fn warmup(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
-        if POWER_SAVE.load(Ordering::Relaxed) {
+        if POWER_SAVE.load(Ordering::Relaxed) || should_prefer_cf() {
             return;
         }
         let fast = crate::cffront::direct_fast_fail();
@@ -329,24 +335,107 @@ pub fn is_http_transport(data: &[u8]) -> bool {
 // Bridge WS
 // ---------------------------------------------------------------------------
 
-pub async fn bridge_ws(
+struct BridgeEarlyDisconnect {
+    conn: TcpStream,
+    first_raw_chunk: Option<Vec<u8>>,
+    clt_dec: TrackedStream,
+    clt_enc: TrackedStream,
+    tg_enc: TrackedStream,
+    tg_dec: TrackedStream,
+}
+
+async fn send_encrypted_client_chunk(
+    ws: &RawWebSocket,
+    splitter: &mut Option<MsgSplitter>,
+    clt_dec: &mut TrackedStream,
+    tg_enc: &mut TrackedStream,
+    chunk: &mut [u8],
+) -> (bool, usize) {
+    clt_dec.xor(chunk);
+    tg_enc.xor(chunk);
+    if let Some(sp) = splitter.as_mut() {
+        let parts = sp.split(chunk);
+        let n_parts = parts.len();
+        let err = if parts.len() > 1 {
+            ws.send_batch(&parts).await.is_err()
+        } else if parts.len() == 1 {
+            ws.send(&parts[0]).await.is_err()
+        } else {
+            false
+        };
+        (err, n_parts)
+    } else {
+        (ws.send(chunk).await.is_err(), 1)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn bridge_ws_with_retry(
     conn: TcpStream,
     ws: RawWebSocket,
     _label: String,
-    _dc: i32,
-    _dst: String,
+    dc: i32,
+    dst: String,
     _port: u16,
-    _is_media: bool,
+    is_media: bool,
     mut splitter: Option<MsgSplitter>,
     mut clt_dec: TrackedStream,
-    mut clt_enc: TrackedStream,
+    clt_enc: TrackedStream,
     mut tg_enc: TrackedStream,
-    mut tg_dec: TrackedStream,
+    tg_dec: TrackedStream,
+    initial_raw_chunk: Option<Vec<u8>>,
+    allow_early_retry: bool,
     cancel_token: CancellationToken,
-) {
+) -> Result<(), BridgeEarlyDisconnect> {
+    let saved_states = if allow_early_retry {
+        Some((
+            clt_dec.clone_state(),
+            clt_enc.clone_state(),
+            tg_enc.clone_state(),
+            tg_dec.clone_state(),
+        ))
+    } else {
+        None
+    };
+
+    let bridge_started = std::time::Instant::now();
+    let mut initial_bytes = 0usize;
+    let mut initial_parts = 0usize;
+    if let Some(ref raw) = initial_raw_chunk {
+        initial_bytes = raw.len();
+        let mut initial_buf = raw.clone();
+        let (send_err, n_parts) = send_encrypted_client_chunk(
+            &ws,
+            &mut splitter,
+            &mut clt_dec,
+            &mut tg_enc,
+            &mut initial_buf,
+        )
+        .await;
+        initial_parts = n_parts;
+        if send_err {
+            ws.close().await;
+            if let Some((cd, ce, te, td)) = saved_states {
+                return Err(BridgeEarlyDisconnect {
+                    conn,
+                    first_raw_chunk: initial_raw_chunk,
+                    clt_dec: cd,
+                    clt_enc: ce,
+                    tg_enc: te,
+                    tg_dec: td,
+                });
+            }
+            return Ok(());
+        }
+    }
+
     let ws = Arc::new(ws);
     let last_activity = Arc::new(Mutex::new(std::time::Instant::now()));
     let cancel = Arc::new(tokio::sync::Notify::new());
+    let received_down = Arc::new(AtomicBool::new(false));
+    let chunks_seen = Arc::new(AtomicUsize::new(usize::from(initial_raw_chunk.is_some())));
+    let bytes_seen_up = Arc::new(AtomicUsize::new(initial_bytes));
+    let parts_sent_up = Arc::new(AtomicUsize::new(initial_parts));
 
     let (mut conn_read, mut conn_write) = conn.into_split();
 
@@ -380,8 +469,14 @@ pub async fn bridge_ws(
     let la_up = last_activity.clone();
     let cancel_up = cancel.clone();
     let cancel_token_up = cancel_token.clone();
+    let received_down_up = received_down.clone();
+    let chunks_seen_up = chunks_seen.clone();
+    let bytes_seen_up_task = bytes_seen_up.clone();
+    let parts_sent_up_task = parts_sent_up.clone();
     let up_task = tokio::spawn(async move {
         let mut buf = vec![0u8; WS_BRIDGE_CHUNK_SIZE];
+        let mut local_first_raw = initial_raw_chunk;
+        let mut client_eof = false;
         loop {
             let read_res = tokio::select! {
                 _ = cancel_token_up.cancelled() => break,
@@ -390,6 +485,7 @@ pub async fn bridge_ws(
             };
             let n = match read_res {
                 Ok(Ok(0)) => {
+                    client_eof = true;
                     // EOF: flush splitter tail
                     if let Some(sp) = splitter.as_mut() {
                         let tail = sp.flush();
@@ -407,36 +503,35 @@ pub async fn bridge_ws(
                     break;
                 }
                 Ok(Ok(n)) => n,
-                Ok(Err(_)) => break,
+                Ok(Err(_)) => {
+                    client_eof = true;
+                    break;
+                }
                 Err(_) => break, // read timeout
             };
 
+            let prev_chunks = chunks_seen_up.fetch_add(1, Ordering::AcqRel);
+            if prev_chunks == 0 && allow_early_retry && !received_down_up.load(Ordering::Acquire) {
+                local_first_raw = Some(buf[..n].to_vec());
+            } else {
+                local_first_raw = None;
+            }
+
             let chunk = &mut buf[..n];
+            bytes_seen_up_task.fetch_add(n, Ordering::Relaxed);
             STATS.bytes_up.fetch_add(n as i64, Ordering::Relaxed);
             *la_up.lock().await = std::time::Instant::now();
 
-            clt_dec.xor(chunk);
-            tg_enc.xor(chunk);
-
-            let send_err = {
-                if let Some(sp) = splitter.as_mut() {
-                    let parts = sp.split(chunk);
-                    if parts.len() > 1 {
-                        ws_up.send_batch(&parts).await.is_err()
-                    } else if parts.len() == 1 {
-                        ws_up.send(&parts[0]).await.is_err()
-                    } else {
-                        false
-                    }
-                } else {
-                    ws_up.send(chunk).await.is_err()
-                }
-            };
+            let (send_err, n_parts) =
+                send_encrypted_client_chunk(&ws_up, &mut splitter, &mut clt_dec, &mut tg_enc, chunk)
+                    .await;
+            parts_sent_up_task.fetch_add(n_parts, Ordering::Relaxed);
             if send_err {
                 break;
             }
         }
         cancel_up.notify_waiters();
+        (conn_read, local_first_raw, client_eof)
     });
 
     // down: ws -> client
@@ -444,36 +539,139 @@ pub async fn bridge_ws(
     let la_down = last_activity.clone();
     let cancel_down = cancel.clone();
     let cancel_token_down = cancel_token.clone();
+    let received_down_down = received_down.clone();
+    let mut clt_enc_down = clt_enc;
+    let mut tg_dec_down = tg_dec;
+    let bytes_seen_down = Arc::new(AtomicUsize::new(0));
+    let bytes_seen_down_task = bytes_seen_down.clone();
     let down_task = tokio::spawn(async move {
+        let last_err: String;
         loop {
             let recv_res = tokio::select! {
-                _ = cancel_token_down.cancelled() => break,
-                _ = cancel_down.notified() => break,
+                _ = cancel_token_down.cancelled() => {
+                    last_err = "canceled".into();
+                    break;
+                }
+                _ = cancel_down.notified() => {
+                    last_err = "up_closed".into();
+                    break;
+                }
                 r = ws_down.recv_with_timeout(BRIDGE_READ_TIMEOUT) => r,
             };
             let mut data = match recv_res {
                 Ok(d) => d,
-                Err(_) => break,
+                Err(e) => {
+                    last_err = e.compact();
+                    break;
+                }
             };
+            received_down_down.store(true, Ordering::Release);
             let n = data.len();
+            bytes_seen_down_task.fetch_add(n, Ordering::Relaxed);
             STATS.bytes_down.fetch_add(n as i64, Ordering::Relaxed);
             *la_down.lock().await = std::time::Instant::now();
 
-            tg_dec.xor(&mut data);
-            clt_enc.xor(&mut data);
+            tg_dec_down.xor(&mut data);
+            clt_enc_down.xor(&mut data);
             if conn_write.write_all(&data).await.is_err() {
+                last_err = "client_write_err".into();
                 break;
             }
         }
         cancel_down.notify_waiters();
+        (conn_write, last_err)
     });
 
-    let _ = up_task.await;
-    let _ = down_task.await;
+    let up_res = up_task.await;
+    let down_res = down_task.await;
     cancel.notify_waiters();
     ping_task.abort();
 
     ws.close().await;
+
+    let (client_eof_dbg, chunks_dbg) = match &up_res {
+        Ok((_, _, eof)) => (*eof, chunks_seen.load(Ordering::Acquire)),
+        Err(_) => (true, chunks_seen.load(Ordering::Acquire)),
+    };
+    let (conn_write_opt, down_err_dbg) = match down_res {
+        Ok((cw, err)) => (Some(cw), err),
+        Err(_) => (None, "join_err".to_string()),
+    };
+    ldebug!(
+        " bridge end DC{}{} via {}: recv_down={} chunks_up={} parts_up={} up={}B down={}B client_eof={} down_err={} dur_ms={}",
+        dc,
+        media_tag(is_media),
+        dst,
+        received_down.load(Ordering::Acquire),
+        chunks_dbg,
+        parts_sent_up.load(Ordering::Relaxed),
+        bytes_seen_up.load(Ordering::Relaxed),
+        bytes_seen_down.load(Ordering::Relaxed),
+        client_eof_dbg,
+        down_err_dbg,
+        bridge_started.elapsed().as_millis()
+    );
+
+    if let (
+        Some((cd, ce, te, td)),
+        Ok((conn_read, first_raw, client_eof)),
+        Some(conn_write),
+    ) = (saved_states, up_res, conn_write_opt)
+    {
+        if !received_down.load(Ordering::Acquire)
+            && !client_eof
+            && chunks_seen.load(Ordering::Acquire) <= 1
+            && !cancel_token.is_cancelled()
+        {
+            if let Ok(reunited) = conn_read.reunite(conn_write) {
+                return Err(BridgeEarlyDisconnect {
+                    conn: reunited,
+                    first_raw_chunk: first_raw,
+                    clt_dec: cd,
+                    clt_enc: ce,
+                    tg_enc: te,
+                    tg_dec: td,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn bridge_ws(
+    conn: TcpStream,
+    ws: RawWebSocket,
+    label: String,
+    dc: i32,
+    dst: String,
+    port: u16,
+    is_media: bool,
+    splitter: Option<MsgSplitter>,
+    clt_dec: TrackedStream,
+    clt_enc: TrackedStream,
+    tg_enc: TrackedStream,
+    tg_dec: TrackedStream,
+    cancel_token: CancellationToken,
+) {
+    let _ = bridge_ws_with_retry(
+        conn,
+        ws,
+        label,
+        dc,
+        dst,
+        port,
+        is_media,
+        splitter,
+        clt_dec,
+        clt_enc,
+        tg_enc,
+        tg_dec,
+        None,
+        false,
+        cancel_token,
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +831,9 @@ pub fn rewarm(pool: Arc<WsPool>) {
         }
     }
     cf_pool_refill_active();
+    if should_prefer_cf() {
+        return;
+    }
     let map = DC_OPT.read().clone();
     tokio::spawn(async move {
         pool.warmup(&map).await;
@@ -1005,63 +1206,256 @@ pub async fn do_fallback(
     tg_dec: &TrackedStream,
     cancel_token: CancellationToken,
 ) -> bool {
-    // Clone streams (как Go Clone())
-    let clt_dec = clt_dec.clone_state();
-    let clt_enc = clt_enc.clone_state();
-    let tg_enc = tg_enc.clone_state();
-    let tg_dec = tg_dec.clone_state();
+    do_fallback_with_initial(
+        conn,
+        relay_init,
+        label,
+        dc,
+        is_media,
+        0xDDDDDDDD,
+        splitter,
+        None,
+        clt_dec,
+        clt_enc,
+        tg_enc,
+        tg_dec,
+        cancel_token,
+    )
+    .await
+}
 
-    let fallback_dst = resolve_fallback_target(dc, is_media);
-    let use_cf = CFPROXY_ENABLED.load(Ordering::Relaxed);
+struct CfBridgeMissed {
+    conn: TcpStream,
+    splitter: Option<MsgSplitter>,
+    initial_raw_chunk: Option<Vec<u8>>,
+    clt_dec: TrackedStream,
+    clt_enc: TrackedStream,
+    tg_enc: TrackedStream,
+    tg_dec: TrackedStream,
+}
 
-    if use_cf {
-        cf_pool_mark_used(dc);
+#[allow(clippy::too_many_arguments)]
+async fn try_cf_bridge(
+    mut conn: TcpStream,
+    relay_init: &[u8],
+    label: &str,
+    dc: i32,
+    is_media: bool,
+    proto: u32,
+    mut splitter: Option<MsgSplitter>,
+    mut initial_raw_chunk: Option<Vec<u8>>,
+    mut clt_dec: TrackedStream,
+    mut clt_enc: TrackedStream,
+    mut tg_enc: TrackedStream,
+    mut tg_dec: TrackedStream,
+    cancel_token: &CancellationToken,
+) -> Result<(), CfBridgeMissed> {
+    if !CFPROXY_ENABLED.load(Ordering::Relaxed) {
+        return Err(CfBridgeMissed {
+            conn,
+            splitter,
+            initial_raw_chunk,
+            clt_dec,
+            clt_enc,
+            tg_enc,
+            tg_dec,
+        });
+    }
 
-        let mut ready: Option<(RawWebSocket, String)> = None;
-        while let Some((ws, domain)) = cf_pool_take(dc) {
-            if ws.send(relay_init).await.is_ok() {
-                ready = Some((ws, domain));
-                break;
-            }
+    cf_pool_mark_used(dc);
+
+    while let Some((ws, domain)) = cf_pool_take(dc) {
+        if ws.send(relay_init).await.is_err() {
             ws.close().await;
+            continue;
         }
-        if ready.is_none() {
-            if let Some((ws, domain)) = cfproxy_acquire_ws(dc, is_media, &cancel_token).await {
-                if ws.send(relay_init).await.is_ok() {
-                    ready = Some((ws, domain));
-                } else {
-                    ws.close().await;
-                }
+        STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
+        linfo!(" DC{}{} подключен через CF", dc, media_tag(is_media));
+
+        match bridge_ws_with_retry(
+            conn,
+            ws,
+            label.to_string(),
+            dc,
+            domain,
+            443,
+            is_media,
+            splitter.take(),
+            clt_dec.clone_state(),
+            clt_enc.clone_state(),
+            tg_enc.clone_state(),
+            tg_dec.clone_state(),
+            initial_raw_chunk.take(),
+            true,
+            cancel_token.clone(),
+        )
+        .await
+        {
+            Ok(()) => {
+                cf_pool_refill_async(dc);
+                return Ok(());
+            }
+            Err(early) => {
+                conn = early.conn;
+                initial_raw_chunk = early.first_raw_chunk;
+                clt_dec = early.clt_dec;
+                clt_enc = early.clt_enc;
+                tg_enc = early.tg_enc;
+                tg_dec = early.tg_dec;
+                splitter = MsgSplitter::new(relay_init, proto);
+                lwarn!(
+                    " DC{}{}: stale CF pool WS closed before reply, retrying",
+                    dc,
+                    media_tag(is_media)
+                );
             }
         }
-        cf_pool_refill_async(dc);
+    }
 
-        if let Some((ws, chosen_domain)) = ready {
+    if let Some((ws, chosen_domain)) = cfproxy_acquire_ws(dc, is_media, cancel_token).await {
+        if ws.send(relay_init).await.is_ok() {
+            cf_pool_refill_async(dc);
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             linfo!(" DC{}{} подключен через CF", dc, media_tag(is_media));
 
-            bridge_ws(
+            let _ = bridge_ws_with_retry(
                 conn,
                 ws,
-                label,
+                label.to_string(),
                 dc,
                 chosen_domain,
                 443,
                 is_media,
-                splitter,
+                splitter.or_else(|| MsgSplitter::new(relay_init, proto)),
                 clt_dec,
                 clt_enc,
                 tg_enc,
                 tg_dec,
+                initial_raw_chunk,
+                false,
+                cancel_token.clone(),
+            )
+            .await;
+            return Ok(());
+        } else {
+            ws.close().await;
+        }
+    }
+    cf_pool_refill_async(dc);
+    Err(CfBridgeMissed {
+        conn,
+        splitter,
+        initial_raw_chunk,
+        clt_dec,
+        clt_enc,
+        tg_enc,
+        tg_dec,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_after_direct_failure(
+    cf_already_tried: bool,
+    conn: TcpStream,
+    relay_init: &[u8],
+    label: String,
+    dc: i32,
+    is_media: bool,
+    proto: u32,
+    splitter: Option<MsgSplitter>,
+    initial_raw_chunk: Option<Vec<u8>>,
+    clt_dec: &TrackedStream,
+    clt_enc: &TrackedStream,
+    tg_enc: &TrackedStream,
+    tg_dec: &TrackedStream,
+    cancel_token: CancellationToken,
+) {
+    if cf_already_tried {
+        let fallback_dst = resolve_fallback_target(dc, is_media);
+        if !fallback_dst.is_empty() && initial_raw_chunk.is_none() {
+            tcp_fallback(
+                conn,
+                &fallback_dst,
+                443,
+                relay_init,
+                label,
+                dc,
+                is_media,
+                clt_dec.clone_state(),
+                clt_enc.clone_state(),
+                tg_enc.clone_state(),
+                tg_dec.clone_state(),
                 cancel_token,
             )
             .await;
-            return true;
         }
-        // CF не дал ws — conn НЕ тронут, идём в TCP fallback ниже.
+        return;
     }
+    do_fallback_with_initial(
+        conn,
+        relay_init,
+        label,
+        dc,
+        is_media,
+        proto,
+        splitter,
+        initial_raw_chunk,
+        clt_dec,
+        clt_enc,
+        tg_enc,
+        tg_dec,
+        cancel_token,
+    )
+    .await;
+}
 
-    if !fallback_dst.is_empty() {
+#[allow(clippy::too_many_arguments)]
+async fn do_fallback_with_initial(
+    conn: TcpStream,
+    relay_init: &[u8],
+    label: String,
+    dc: i32,
+    is_media: bool,
+    proto: u32,
+    splitter: Option<MsgSplitter>,
+    initial_raw_chunk: Option<Vec<u8>>,
+    clt_dec: &TrackedStream,
+    clt_enc: &TrackedStream,
+    tg_enc: &TrackedStream,
+    tg_dec: &TrackedStream,
+    cancel_token: CancellationToken,
+) -> bool {
+    let fallback_dst = resolve_fallback_target(dc, is_media);
+
+    let (conn, initial_raw_chunk, clt_dec, clt_enc, tg_enc, tg_dec) = match try_cf_bridge(
+        conn,
+        relay_init,
+        &label,
+        dc,
+        is_media,
+        proto,
+        splitter,
+        initial_raw_chunk,
+        clt_dec.clone_state(),
+        clt_enc.clone_state(),
+        tg_enc.clone_state(),
+        tg_dec.clone_state(),
+        &cancel_token,
+    )
+    .await
+    {
+        Ok(()) => return true,
+        Err(missed) => (
+            missed.conn,
+            missed.initial_raw_chunk,
+            missed.clt_dec,
+            missed.clt_enc,
+            missed.tg_enc,
+            missed.tg_dec,
+        ),
+    };
+
+    if !fallback_dst.is_empty() && initial_raw_chunk.is_none() {
         return tcp_fallback(
             conn,
             &fallback_dst,
@@ -1180,7 +1574,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let mut hash_enc = Sha256::new();
     hash_enc.update(&clt_enc_prekey_and_iv[..32]);
     hash_enc.update(&secret_bytes);
-    let clt_encryptor = new_aes_ctr(&hash_enc.finalize(), &clt_enc_prekey_and_iv[32..]);
+    let mut clt_encryptor = new_aes_ctr(&hash_enc.finalize(), &clt_enc_prekey_and_iv[32..]);
 
     // relayInit генерация (1-в-1 c Go)
     let mut relay_init = [0u8; 64];
@@ -1217,7 +1611,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     }
 
     let mut tg_encryptor = new_aes_ctr(&relay_init[8..40], &relay_init[40..56]);
-    let tg_decryptor = new_aes_ctr(&tg_dec_prekey_and_iv[..32], &tg_dec_prekey_and_iv[32..]);
+    let mut tg_decryptor = new_aes_ctr(&tg_dec_prekey_and_iv[..32], &tg_dec_prekey_and_iv[32..]);
 
     let mut dc_bytes = [0u8; 2];
     let dc_idx = if is_media { -dc } else { dc };
@@ -1240,7 +1634,41 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let dc_key = (dc, is_media_int(is_media));
     let now = now_unix_f64();
 
-    let splitter = MsgSplitter::new(&relay_init, proto);
+    let mut splitter = MsgSplitter::new(&relay_init, proto);
+    let mut initial_raw_chunk: Option<Vec<u8>> = None;
+    let mut cf_already_tried = false;
+
+    if should_prefer_cf() {
+        cf_already_tried = true;
+        match try_cf_bridge(
+            conn,
+            &relay_init,
+            &label,
+            dc,
+            is_media,
+            proto,
+            splitter,
+            None,
+            clt_decryptor,
+            clt_encryptor,
+            tg_encryptor,
+            tg_decryptor,
+            &cancel_token,
+        )
+        .await
+        {
+            Ok(()) => return,
+            Err(missed) => {
+                conn = missed.conn;
+                splitter = missed.splitter;
+                initial_raw_chunk = missed.initial_raw_chunk;
+                clt_decryptor = missed.clt_dec;
+                clt_encryptor = missed.clt_enc;
+                tg_encryptor = missed.tg_enc;
+                tg_decryptor = missed.tg_dec;
+            }
+        }
+    }
 
     let target_opt = resolve_configured_target(dc, is_media);
     let dc_configured = target_opt.is_some();
@@ -1249,13 +1677,16 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let blacklisted = WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false);
 
     if !dc_configured || blacklisted {
-        do_fallback(
+        finish_after_direct_failure(
+            cf_already_tried,
             conn,
             &relay_init,
             label,
             dc,
             is_media,
+            proto,
             splitter,
+            initial_raw_chunk,
             &clt_decryptor,
             &clt_encryptor,
             &tg_encryptor,
@@ -1278,10 +1709,14 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let fail_cooldown = if direct_fast_fail { crate::cffront::DIRECT_FAST_COOLDOWN } else { DC_FAIL_COOLDOWN };
 
     let domains = ws_domains(dc, is_media);
-    let (mut ws_opt, ws_failed_redirect, all_redirects) = if direct_fast_fail {
+    let mut ws_from_pool = false;
+    let (mut ws_opt, ws_failed_redirect, all_redirects) = if cf_already_tried {
+        connect_direct_ws(&target, &domains, ws_timeout).await
+    } else if direct_fast_fail {
         let cooling = now < fail_until;
         let pooled = if cooling { None } else { pool.get(dc, is_media, target.clone(), domains.clone()).await };
         if let Some(w) = pooled {
+            ws_from_pool = true;
             crate::cffront::mark_direct_ok(dc_key);
             (Some(w), false, false)
         } else if !cooling && crate::cffront::direct_ok(dc_key) {
@@ -1294,13 +1729,15 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
                 }
                 None => {
                     ldebug!(" DC{}{}: Cloudflare ответил раньше прямого", dc, m_tag);
-                    do_fallback(
+                    do_fallback_with_initial(
                         conn,
                         &relay_init,
                         label,
                         dc,
                         is_media,
+                        proto,
                         splitter,
+                        None,
                         &clt_decryptor,
                         &clt_encryptor,
                         &tg_encryptor,
@@ -1315,13 +1752,15 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
             if !cooling {
                 crate::cffront::check_direct_in_background(dc_key, target.clone(), domains.clone());
             }
-            do_fallback(
+            do_fallback_with_initial(
                 conn,
                 &relay_init,
                 label,
                 dc,
                 is_media,
+                proto,
                 splitter,
+                None,
                 &clt_decryptor,
                 &clt_encryptor,
                 &tg_encryptor,
@@ -1332,6 +1771,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
             return;
         }
     } else if let Some(w) = pool.get(dc, is_media, target.clone(), domains.clone()).await {
+        ws_from_pool = true;
         (Some(w), false, false)
     } else {
         connect_direct_ws(&target, &domains, ws_timeout).await
@@ -1346,13 +1786,16 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
             DC_FAIL_UNTIL.write().insert(dc_key, now + fail_cooldown);
         }
         let splitter_fb = MsgSplitter::new(&relay_init, proto);
-        do_fallback(
+        finish_after_direct_failure(
+            cf_already_tried,
             conn,
             &relay_init,
             label,
             dc,
             is_media,
+            proto,
             splitter_fb,
+            initial_raw_chunk,
             &clt_decryptor,
             &clt_encryptor,
             &tg_encryptor,
@@ -1369,6 +1812,7 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     if send_ok {
         ldebug!(" direct relayInit sent DC{}{}", dc, m_tag);
     } else {
+        ws_from_pool = false;
         lwarn!(" direct relayInit write fail DC{}{}: closed", dc, m_tag);
         ws.close().await;
 
@@ -1385,13 +1829,16 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
                 }
                 lwarn!(" direct fallback DC{}{}", dc, m_tag);
                 let splitter_fb = MsgSplitter::new(&relay_init, proto);
-                do_fallback(
+                finish_after_direct_failure(
+                    cf_already_tried,
                     conn,
                     &relay_init,
                     label,
                     dc,
                     is_media,
+                    proto,
                     splitter_fb,
+                    initial_raw_chunk,
                     &clt_decryptor,
                     &clt_encryptor,
                     &tg_encryptor,
@@ -1407,13 +1854,16 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
                     rws.close().await;
                     lwarn!(" direct fallback DC{}{}", dc, m_tag);
                     let splitter_fb = MsgSplitter::new(&relay_init, proto);
-                    do_fallback(
+                    finish_after_direct_failure(
+                        cf_already_tried,
                         conn,
                         &relay_init,
                         label,
                         dc,
                         is_media,
+                        proto,
                         splitter_fb,
+                        initial_raw_chunk,
                         &clt_decryptor,
                         &clt_encryptor,
                         &tg_encryptor,
@@ -1434,12 +1884,12 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     let _ = &pool;
     STATS.connections_ws.fetch_add(1, Ordering::Relaxed);
 
-    bridge_ws(
+    if let Err(early) = bridge_ws_with_retry(
         conn,
         ws,
-        label,
+        label.clone(),
         dc,
-        target,
+        target.clone(),
         443,
         is_media,
         splitter,
@@ -1447,9 +1897,65 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
         clt_encryptor,
         tg_encryptor,
         tg_decryptor,
-        cancel_token,
+        initial_raw_chunk,
+        ws_from_pool,
+        cancel_token.clone(),
     )
-    .await;
+    .await
+    {
+        lwarn!(" DC{}{}: stale pooled WS closed before reply, falling back", dc, m_tag);
+        let retry_ws = if direct_fast_fail {
+            match direct_or_cf_race(&target, &domains, ws_timeout, dc, is_media, &cancel_token)
+                .await
+            {
+                Some((w, _, _)) => w,
+                None => None,
+            }
+        } else {
+            connect_direct_ws(&target, &domains, ws_timeout).await.0
+        };
+        if let Some(fresh_ws) = retry_ws {
+            if fresh_ws.send(&relay_init).await.is_ok() {
+                let _ = bridge_ws_with_retry(
+                    early.conn,
+                    fresh_ws,
+                    label,
+                    dc,
+                    target,
+                    443,
+                    is_media,
+                    MsgSplitter::new(&relay_init, proto),
+                    early.clt_dec,
+                    early.clt_enc,
+                    early.tg_enc,
+                    early.tg_dec,
+                    early.first_raw_chunk,
+                    false,
+                    cancel_token,
+                )
+                .await;
+                return;
+            }
+            fresh_ws.close().await;
+        }
+        DC_FAIL_UNTIL.write().insert(dc_key, now + fail_cooldown);
+        do_fallback_with_initial(
+            early.conn,
+            &relay_init,
+            label,
+            dc,
+            is_media,
+            proto,
+            MsgSplitter::new(&relay_init, proto),
+            early.first_raw_chunk,
+            &early.clt_dec,
+            &early.clt_enc,
+            &early.tg_enc,
+            &early.tg_dec,
+            cancel_token,
+        )
+        .await;
+    }
 }
 
 // connectDirectWS
@@ -1579,4 +2085,381 @@ pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    async fn mock_ws_server(
+        listener: TcpListener,
+        send_close_immediately: bool,
+        reply_payload: &'static [u8],
+    ) {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(&mut s);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await.unwrap();
+            if n == 0 || line == "\r\n" || line == "\n" {
+                break;
+            }
+        }
+        let s = reader.into_inner();
+        s.write_all(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // Read relay_init frame from proxy
+        let mut hdr = [0u8; 2];
+        s.read_exact(&mut hdr).await.unwrap();
+        let len = (hdr[1] & 0x7F) as usize;
+        let mut skip = vec![0u8; 4 + len];
+        s.read_exact(&mut skip).await.unwrap();
+
+        if send_close_immediately {
+            // Close immediately without reading/replying to first packet
+            let _ = s.write_all(&[0x88, 0x02, 0x03, 0xE8]).await;
+            let _ = s.shutdown().await;
+            return;
+        }
+
+        // Read client first packet frame from proxy
+        s.read_exact(&mut hdr).await.unwrap();
+        let len2 = (hdr[1] & 0x7F) as usize;
+        let mut skip2 = vec![0u8; 4 + len2];
+        s.read_exact(&mut skip2).await.unwrap();
+
+        // Send unmasked OP_BINARY response frame
+        let mut frame = vec![0x82, reply_payload.len() as u8];
+        frame.extend_from_slice(reply_payload);
+        s.write_all(&frame).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_bridge_ws_with_retry_recovers_stream_when_pooled_ws_closes_before_reply() {
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+
+        let ws_listener_dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = ws_listener_dead.local_addr().unwrap();
+        let ws_listener_live = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_addr = ws_listener_live.local_addr().unwrap();
+
+        let dead_srv = tokio::spawn(mock_ws_server(ws_listener_dead, true, b""));
+        let live_srv = tokio::spawn(mock_ws_server(ws_listener_live, false, b"HELLO_TG"));
+
+        let client_task = tokio::spawn(async move {
+            let mut c = TcpStream::connect(client_addr).await.unwrap();
+            c.write_all(b"CLIENT_PKT_1").await.unwrap();
+            let mut out = vec![0u8; 32];
+            let n = c.read(&mut out).await.unwrap();
+            out[..n].to_vec()
+        });
+
+        let (proxy_conn, _) = client_listener.accept().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        // Zero-key AES streams (arbitrary for framing test)
+        let key = [1u8; 32];
+        let iv = [2u8; 16];
+        let tg_dec_expected = TrackedStream::new(&key, &iv);
+        let clt_enc_expected = TrackedStream::new(&key, &iv);
+
+        let s_dead = TcpStream::connect(dead_addr).await.unwrap();
+        let dead_ws = crate::ws::ws_handshake(
+            Box::new(s_dead),
+            "localhost",
+            "/apiws",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        dead_ws.send(&[0u8; 64]).await.unwrap();
+
+        let Err(err) = bridge_ws_with_retry(
+            proxy_conn,
+            dead_ws,
+            "test".into(),
+            2,
+            "dead".into(),
+            443,
+            false,
+            None,
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            None,
+            true,
+            cancel.clone(),
+        )
+        .await
+        else {
+            panic!("expected early disconnect retry context");
+        };
+
+        let s_live = TcpStream::connect(live_addr).await.unwrap();
+        let live_ws = crate::ws::ws_handshake(
+            Box::new(s_live),
+            "localhost",
+            "/apiws",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        live_ws.send(&[0u8; 64]).await.unwrap();
+
+        if bridge_ws_with_retry(
+            err.conn,
+            live_ws,
+            "test".into(),
+            2,
+            "live".into(),
+            443,
+            false,
+            None,
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            TrackedStream::new(&key, &iv),
+            err.first_raw_chunk,
+            false,
+            cancel,
+        )
+        .await
+        .is_err()
+        {
+            panic!("second bridge should complete cleanly");
+        }
+
+        let client_bytes = client_task.await.unwrap();
+        let mut expected = b"HELLO_TG".to_vec();
+        let mut td = tg_dec_expected;
+        let mut ce = clt_enc_expected;
+        td.xor(&mut expected);
+        ce.xor(&mut expected);
+        assert_eq!(client_bytes, expected);
+
+        dead_srv.await.unwrap();
+        live_srv.await.unwrap();
+    }
+
+    static PROXY_TEST_LOCK: Lazy<tokio::sync::Mutex<()>> =
+        Lazy::new(|| tokio::sync::Mutex::new(()));
+
+    async fn mock_tg_ws_echo_tag(listener: TcpListener, tag: &'static [u8]) {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(&mut s);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await.unwrap();
+            if n == 0 || line == "\r\n" || line == "\n" {
+                break;
+            }
+        }
+        let s = reader.into_inner();
+        s.write_all(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let mut hdr = [0u8; 2];
+        s.read_exact(&mut hdr).await.unwrap();
+        let len = (hdr[1] & 0x7F) as usize;
+        let mut mask = [0u8; 4];
+        s.read_exact(&mut mask).await.unwrap();
+        let mut relay_init = vec![0u8; len];
+        s.read_exact(&mut relay_init).await.unwrap();
+        xor_mask_in_place(&mut relay_init, &mask);
+
+        // Encrypt reply with server->proxy stream (tg_dec key = reversed relay_init[8..56], offset 0)
+        let mut tg_rev = [0u8; 48];
+        for i in 0..48 {
+            tg_rev[i] = relay_init[8 + 47 - i];
+        }
+        let mut srv_enc = new_aes_ctr(&tg_rev[..32], &tg_rev[32..]);
+        let mut payload = tag.to_vec();
+        srv_enc.xor(&mut payload);
+
+        let mut frame = vec![0x82, payload.len() as u8];
+        frame.extend_from_slice(&payload);
+        s.write_all(&frame).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    fn build_client_dd_handshake(secret: &[u8], dc: i16) -> ([u8; 64], TrackedStream) {
+        let mut hs = [0x42u8; 64];
+        for i in 0..56 {
+            hs[i] = (i as u8).wrapping_mul(7).wrapping_add(11);
+        }
+        hs[56..60].copy_from_slice(&0xDDDDDDDDu32.to_le_bytes());
+        hs[60..62].copy_from_slice(&dc.to_le_bytes());
+
+        let mut dec_pre = [0u8; 48];
+        for i in 0..48 {
+            dec_pre[i] = hs[8 + 47 - i];
+        }
+        let mut h_dec = Sha256::new();
+        h_dec.update(&dec_pre[..32]);
+        h_dec.update(secret);
+        let clt_recv_dec = new_aes_ctr(&h_dec.finalize(), &dec_pre[32..]);
+
+        let mut h_enc = Sha256::new();
+        h_enc.update(&hs[8..40]);
+        h_enc.update(secret);
+        let mut clt_enc = new_aes_ctr(&h_enc.finalize(), &hs[40..56]);
+        let mut enc_full = hs;
+        clt_enc.xor(&mut enc_full);
+        hs[56..64].copy_from_slice(&enc_full[56..64]);
+        (hs, clt_recv_dec)
+    }
+
+    #[tokio::test]
+    async fn test_should_prefer_cf_requires_enabled_priority_and_domains() {
+        let _guard = PROXY_TEST_LOCK.lock().await;
+        let prev_enabled = CFPROXY_ENABLED.swap(true, Ordering::Relaxed);
+        let prev_priority = CF_PRIORITY.swap(true, Ordering::Relaxed);
+        let prev_domains = std::mem::replace(
+            &mut CFPROXY.write().domains,
+            vec!["example.co.uk".to_string()],
+        );
+
+        assert!(should_prefer_cf());
+
+        CF_PRIORITY.store(false, Ordering::Relaxed);
+        assert!(!should_prefer_cf());
+
+        CF_PRIORITY.store(true, Ordering::Relaxed);
+        CFPROXY_ENABLED.store(false, Ordering::Relaxed);
+        assert!(!should_prefer_cf());
+
+        CFPROXY_ENABLED.store(true, Ordering::Relaxed);
+        CFPROXY.write().domains.clear();
+        assert!(!should_prefer_cf());
+
+        CFPROXY_ENABLED.store(prev_enabled, Ordering::Relaxed);
+        CF_PRIORITY.store(prev_priority, Ordering::Relaxed);
+        CFPROXY.write().domains = prev_domains;
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_prefers_cf_pool_over_direct_when_cf_priority_enabled() {
+        let _guard = PROXY_TEST_LOCK.lock().await;
+
+        let prev_secret = PROXY_SECRET.read().clone();
+        let prev_dc_opt = DC_OPT.read().clone();
+        let prev_enabled = CFPROXY_ENABLED.load(Ordering::Relaxed);
+        let prev_priority = CF_PRIORITY.load(Ordering::Relaxed);
+        let prev_fast_fail = crate::cffront::direct_fast_fail();
+        let prev_domains = CFPROXY.read().domains.clone();
+
+        *PROXY_SECRET.write() = "00000000000000000000000000000000".to_string();
+        DC_OPT.write().insert(2, "127.0.0.1".to_string());
+        CFPROXY_ENABLED.store(true, Ordering::Relaxed);
+        CFPROXY.write().domains = vec!["mock.co.uk".to_string()];
+        let _ = cf_pool_drain();
+
+        // Case 1: CF_PRIORITY = true -> must pick CF_POOL even though WsPool & DC_OPT also have direct WS.
+        CF_PRIORITY.store(true, Ordering::Relaxed);
+        crate::cffront::set_direct_fast_fail(true);
+
+        let cf_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cf_addr = cf_listener.local_addr().unwrap();
+        let cf_srv = tokio::spawn(mock_tg_ws_echo_tag(cf_listener, b"FROM_CF"));
+
+        let direct_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let direct_addr = direct_listener.local_addr().unwrap();
+        let direct_srv = tokio::spawn(mock_tg_ws_echo_tag(direct_listener, b"FROM_DIRECT"));
+
+        let cf_ws = crate::ws::ws_handshake(
+            Box::new(TcpStream::connect(cf_addr).await.unwrap()),
+            "localhost",
+            "/apiws",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        cf_pool_put_front(2, cf_ws, "mock.co.uk".to_string());
+
+        let cancel = CancellationToken::new();
+        let pool = Arc::new(WsPool::new(cancel.clone()));
+        let direct_ws = crate::ws::ws_handshake(
+            Box::new(TcpStream::connect(direct_addr).await.unwrap()),
+            "localhost",
+            "/apiws",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        pool.get_slot(DcSlot { dc: 2, is_media: 0 })
+            .await
+            .queue
+            .lock()
+            .await
+            .push_back(PoolEntry {
+                ws: direct_ws,
+                created: now_unix(),
+            });
+
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        let (hs, mut clt_recv_dec) = build_client_dd_handshake(&[0u8; 16], 2);
+
+        let client_task = tokio::spawn(async move {
+            let mut c = TcpStream::connect(client_addr).await.unwrap();
+            c.write_all(&hs).await.unwrap();
+            let mut buf = vec![0u8; 7];
+            c.read_exact(&mut buf).await.unwrap();
+            buf
+        });
+
+        let (proxy_conn, _) = client_listener.accept().await.unwrap();
+        let handler = tokio::spawn(handle_client(pool.clone(), proxy_conn, cancel.clone()));
+        let mut received = client_task.await.unwrap();
+        clt_recv_dec.xor(&mut received);
+        assert_eq!(&received, b"FROM_CF");
+        handler.await.unwrap();
+        cf_srv.await.unwrap();
+
+        // Case 2: CF_PRIORITY = false -> must pick the remaining direct WS from WsPool.
+        CF_PRIORITY.store(false, Ordering::Relaxed);
+        crate::cffront::set_direct_fast_fail(false);
+
+        let client_listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr2 = client_listener2.local_addr().unwrap();
+        let (hs2, mut clt_recv_dec2) = build_client_dd_handshake(&[0u8; 16], 2);
+
+        let client_task2 = tokio::spawn(async move {
+            let mut c = TcpStream::connect(client_addr2).await.unwrap();
+            c.write_all(&hs2).await.unwrap();
+            let mut buf = vec![0u8; 11];
+            c.read_exact(&mut buf).await.unwrap();
+            buf
+        });
+
+        let (proxy_conn2, _) = client_listener2.accept().await.unwrap();
+        let handler2 = tokio::spawn(handle_client(pool.clone(), proxy_conn2, cancel.clone()));
+        let mut received2 = client_task2.await.unwrap();
+        clt_recv_dec2.xor(&mut received2);
+        assert_eq!(&received2, b"FROM_DIRECT");
+        handler2.await.unwrap();
+        direct_srv.await.unwrap();
+
+        cancel.cancel();
+        let _ = cf_pool_drain();
+        pool.close_all().await;
+        *PROXY_SECRET.write() = prev_secret;
+        *DC_OPT.write() = prev_dc_opt;
+        CFPROXY_ENABLED.store(prev_enabled, Ordering::Relaxed);
+        CF_PRIORITY.store(prev_priority, Ordering::Relaxed);
+        crate::cffront::set_direct_fast_fail(prev_fast_fail);
+        CFPROXY.write().domains = prev_domains;
+    }
 }
